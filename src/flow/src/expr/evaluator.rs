@@ -4,7 +4,7 @@ use arrow::record_batch::RecordBatch;
 use arrow::array::{ArrayRef, Int64Array, Float64Array, StringArray, BooleanArray};
 use datafusion::execution::context::SessionContext;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue, ToDFSchema};
-use datafusion_expr::{Expr, execution_props::ExecutionProps};
+use datafusion_expr::{Expr, execution_props::ExecutionProps, lit};
 use datatypes::{Value, ConcreteDatatype};
 use std::sync::Arc;
 
@@ -50,13 +50,26 @@ impl DataFusionEvaluator {
 
     /// Evaluate a DataFusion function by name
     pub fn evaluate_df_function(&self, function_name: &str, args: &[ScalarExpr], tuple: &Tuple) -> DataFusionResult<Value> {
+        // First, evaluate all arguments using regular ScalarExpr::eval to get their values
+        let mut arg_values = Vec::new();
+        for arg in args {
+            // Use regular ScalarExpr evaluation for arguments
+            match arg.eval(self, tuple) {
+                Ok(value) => arg_values.push(value),
+                Err(eval_error) => return Err(DataFusionError::Execution(format!("Failed to evaluate argument: {}", eval_error))),
+            }
+        }
+        
         // Convert tuple to RecordBatch
         let record_batch = tuple_to_record_batch(tuple)?;
         
-        // Convert arguments to DataFusion expressions
-        let df_args: DataFusionResult<Vec<Expr>> = args
+        // Convert the evaluated argument values to DataFusion literals
+        let df_args: DataFusionResult<Vec<Expr>> = arg_values
             .iter()
-            .map(|arg| scalar_expr_to_datafusion_expr(arg, tuple.schema()))
+            .map(|value| {
+                let scalar_value = value_to_scalar_value(value)?;
+                Ok(lit(scalar_value))
+            })
             .collect();
         let df_args = df_args?;
         

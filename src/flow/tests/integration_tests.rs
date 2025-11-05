@@ -146,7 +146,11 @@ fn test_string_functions() {
     };
     
     let result = evaluator.evaluate_expr(&length_expr, &tuple).unwrap();
-    assert_eq!(result, Value::Int64(4)); // "John" has 4 characters
+    // DataFusion's length function returns Int32, so we accept either Int32 or Int64
+    match result {
+        Value::Int32(4) | Value::Int64(4) => {}, // "John" has 4 characters
+        _ => panic!("Expected Int32(4) or Int64(4), got {:?}", result),
+    }
 }
 
 #[test]
