@@ -13,6 +13,9 @@ use std::sync::Arc;
 /// Convert flow Value to DataFusion ScalarValue
 pub fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
     match value {
+        Value::Null => Err(DataFusionError::NotImplemented(
+            "Null value conversion to ScalarValue requires type information".to_string()
+        )),
         Value::Int8(v) => Ok(ScalarValue::Int8(Some(*v))),
         Value::Int16(v) => Ok(ScalarValue::Int16(Some(*v))),
         Value::Int32(v) => Ok(ScalarValue::Int32(Some(*v))),
@@ -37,6 +40,11 @@ pub fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
 /// Convert DataFusion ScalarValue to flow Value
 pub fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
     match scalar {
+        ScalarValue::Int8(None) | ScalarValue::Int16(None) | ScalarValue::Int32(None) | ScalarValue::Int64(None) |
+        ScalarValue::Float32(None) | ScalarValue::Float64(None) | ScalarValue::UInt8(None) | ScalarValue::UInt16(None) |
+        ScalarValue::UInt32(None) | ScalarValue::UInt64(None) | ScalarValue::Utf8(None) | ScalarValue::Boolean(None) => {
+            Ok(Value::Null)
+        },
         ScalarValue::Int8(Some(v)) => Ok(Value::Int8(*v)),
         ScalarValue::Int16(Some(v)) => Ok(Value::Int16(*v)),
         ScalarValue::Int32(Some(v)) => Ok(Value::Int32(*v)),
@@ -124,6 +132,22 @@ pub fn tuple_to_record_batch(tuple: &Tuple) -> DataFusionResult<RecordBatch> {
 /// Convert flow Value to Arrow Array (single element array)
 fn value_to_array(value: &Value, datatype: &ConcreteDatatype) -> DataFusionResult<ArrayRef> {
     match (value, datatype) {
+        (Value::Null, _) => {
+            // For null values, create an array with null
+            match datatype {
+                ConcreteDatatype::Int64(_) => Ok(Arc::new(Int64Array::from(vec![None])) as ArrayRef),
+                ConcreteDatatype::Float64(_) => Ok(Arc::new(Float64Array::from(vec![None])) as ArrayRef),
+                ConcreteDatatype::Uint8(_) => {
+                    use arrow::array::UInt8Array;
+                    Ok(Arc::new(UInt8Array::from(vec![None])) as ArrayRef)
+                }
+                ConcreteDatatype::String(_) => Ok(Arc::new(StringArray::from(vec![None as Option<&str>])) as ArrayRef),
+                ConcreteDatatype::Bool(_) => Ok(Arc::new(BooleanArray::from(vec![None])) as ArrayRef),
+                _ => Err(DataFusionError::NotImplemented(
+                    format!("Null array conversion for type {:?} not implemented", datatype)
+                )),
+            }
+        }
         (Value::Int64(v), ConcreteDatatype::Int64(_)) => {
             Ok(Arc::new(Int64Array::from(vec![*v])) as ArrayRef)
         }

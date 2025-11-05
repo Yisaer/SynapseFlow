@@ -124,8 +124,8 @@ impl Tuple {
 /// For complex types, supports: struct (from JSON object), list (from JSON array)
 fn json_value_to_value(json_val: &JsonValue, data_type: &ConcreteDatatype) -> Result<Value, JsonError> {
     match (json_val, data_type) {
-        // Null values use default
-        (JsonValue::Null, _) => Ok(get_default_value(data_type)),
+        // Null values return Value::Null
+        (JsonValue::Null, _) => Ok(Value::Null),
         
         // Basic types: String
         (JsonValue::String(s), ConcreteDatatype::String(_)) => Ok(Value::String(s.clone())),
@@ -284,14 +284,14 @@ mod tests {
         assert_eq!(tuple2.get(3), Some(&Value::Float64(0.0))); // default for Float64
         assert_eq!(tuple2.get(4), Some(&Value::Bool(false))); // default for Bool
 
-        // Test with null values (should use default values)
+        // Test with null values (should return Value::Null)
         let json3 = br#"{"id": 3, "name": null, "age": 30, "score": null, "active": null}"#;
         let tuple3 = Tuple::new_from_json(schema, json3).unwrap();
         
         assert_eq!(tuple3.get(0), Some(&Value::Int64(3)));
-        assert_eq!(tuple3.get(1), Some(&Value::String(String::new()))); // default for String
+        assert_eq!(tuple3.get(1), Some(&Value::Null)); // null for String
         assert_eq!(tuple3.get(2), Some(&Value::Int64(30)));
-        assert_eq!(tuple3.get(3), Some(&Value::Float64(0.0))); // default for Float64
-        assert_eq!(tuple3.get(4), Some(&Value::Bool(false))); // default for Bool
+        assert_eq!(tuple3.get(3), Some(&Value::Null)); // null for Float64
+        assert_eq!(tuple3.get(4), Some(&Value::Null)); // null for Bool
     }
 }

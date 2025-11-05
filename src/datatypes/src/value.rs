@@ -50,6 +50,8 @@ impl StructValue {
 /// Should be synchronized with ConcreteDatatype variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// Null value representing missing/unknown data
+    Null,
     /// 32-bit floating point number
     Float32(f32),
     /// 64-bit floating point number
@@ -78,4 +80,11 @@ pub enum Value {
     Struct(StructValue),
     /// List value
     List(ListValue),
+}
+
+impl Value {
+    /// Check if the value is null
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
+    }
 }

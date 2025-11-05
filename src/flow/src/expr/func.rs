@@ -30,9 +30,7 @@ impl UnaryFunc {
                 }
             }
             Self::IsNull => {
-                // For simplicity, we check if the value is some sentinel value
-                // In a real implementation, Value would have an is_null() method
-                Ok(Value::Bool(false)) // TODO: implement proper null check
+                Ok(Value::Bool(arg.is_null()))
             }
             Self::IsTrue => {
                 if let Value::Bool(bool) = arg {
@@ -212,8 +210,14 @@ impl BinaryFunc {
 
     /// Compare two values by trying to cast them to comparable types
     fn compare_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+        // Null values are not comparable
+        if left.is_null() || right.is_null() {
+            return None;
+        }
+        
         // If types match, compare directly
         match (left, right) {
+            (Value::Null, _) | (_, Value::Null) => None,
             (Value::Int8(a), Value::Int8(b)) => Some(a.cmp(b)),
             (Value::Int16(a), Value::Int16(b)) => Some(a.cmp(b)),
             (Value::Int32(a), Value::Int32(b)) => Some(a.cmp(b)),
@@ -298,8 +302,26 @@ impl BinaryFunc {
     /// Evaluate a binary function with pre-evaluated arguments
     pub fn eval_binary(&self, left: Value, right: Value) -> Result<Value, EvalError> {
         match self {
-            Self::Eq => Ok(Value::Bool(left == right)),
-            Self::NotEq => Ok(Value::Bool(left != right)),
+            Self::Eq => {
+                // Null == Null is true, Null == anything else is false
+                if left.is_null() && right.is_null() {
+                    Ok(Value::Bool(true))
+                } else if left.is_null() || right.is_null() {
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Bool(left == right))
+                }
+            },
+            Self::NotEq => {
+                // Null != Null is false, Null != anything else is true
+                if left.is_null() && right.is_null() {
+                    Ok(Value::Bool(false))
+                } else if left.is_null() || right.is_null() {
+                    Ok(Value::Bool(true))
+                } else {
+                    Ok(Value::Bool(left != right))
+                }
+            },
             Self::Lt => {
                 Ok(Value::Bool(
                     Self::compare_values(&left, &right)
