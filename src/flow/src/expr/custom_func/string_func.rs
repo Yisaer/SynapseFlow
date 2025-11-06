@@ -44,7 +44,7 @@ impl CustomFunc for ConcatFunc {
     /// # Arguments
     /// 
     /// * `args` - A slice of exactly 2 String values to concatenate.
-    ///            This method assumes arguments have been validated by validate().
+    ///   This method assumes arguments have been validated by validate().
     /// 
     /// # Returns
     /// 
