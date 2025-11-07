@@ -34,6 +34,7 @@ clippy:
 	@echo "Running Clippy checks for sub-crates..."
 	@cd src/datatypes && cargo clippy -- -D warnings
 	@cd src/flow && cargo clippy -- -D warnings
+	@cd src/parser && cargo clippy -- -D warnings
 
 # 清理构建文件
 clean:
