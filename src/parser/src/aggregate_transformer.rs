@@ -4,8 +4,8 @@
 //! To: SELECT col_1 + 1 FROM t GROUP BY b HAVING col_2 > 0
 //! And records the mapping: sum(a) -> col_1, sum(c) -> col_2
 
-use sqlparser::ast::{Expr, Ident, Function, ObjectName, FunctionArg, FunctionArgExpr};
-use crate::select_stmt::{SelectStmt, SelectField};
+use sqlparser::ast::{Expr, Ident, FunctionArg, FunctionArgExpr};
+use crate::select_stmt::SelectStmt;
 use crate::aggregate_visitor::extract_aggregates_with_visitor;
 use std::collections::HashMap;
 
@@ -115,7 +115,7 @@ fn replace_aggregates_in_expression(
         Expr::UnaryOp { op, expr: inner_expr } => {
             let new_inner = replace_aggregates_in_expression(inner_expr, mapping)?;
             Ok(Expr::UnaryOp {
-                op: op.clone(),
+                op: *op,
                 expr: Box::new(new_inner),
             })
         }
@@ -176,7 +176,7 @@ fn replace_aggregates_in_expression(
 
 /// Helper function to identify aggregate functions
 fn is_aggregate_function(function_name: &str) -> bool {
-    let aggregates = vec!["sum", "count", "avg", "min", "max", "stddev", "variance"];
+    let aggregates = ["sum", "count", "avg", "min", "max", "stddev", "variance"];
     aggregates.contains(&function_name.to_lowercase().as_str())
 }
 

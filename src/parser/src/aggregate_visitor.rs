@@ -2,7 +2,7 @@
 //! Uses sqlparser's visitor pattern to efficiently detect and extract aggregate functions
 //! Now with duplicate detection: same aggregate function gets same replacement name
 
-use sqlparser::ast::{Expr, Function, Visitor, Visit};
+use sqlparser::ast::{Expr, Visitor, Visit};
 use std::collections::HashMap;
 
 /// Visitor that collects aggregate functions from SQL expressions
@@ -28,7 +28,7 @@ impl AggregateVisitor {
 
     /// Check if a function is an aggregate function
     fn is_aggregate_function(&self, function_name: &str) -> bool {
-        let aggregates = vec!["sum", "count", "avg", "min", "max", "stddev", "variance"];
+        let aggregates = ["sum", "count", "avg", "min", "max", "stddev", "variance"];
         aggregates.contains(&function_name.to_lowercase().as_str())
     }
 
@@ -54,6 +54,12 @@ impl AggregateVisitor {
     }
 }
 
+impl Default for AggregateVisitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Visitor for AggregateVisitor {
     type Break = ();
 
@@ -62,7 +68,7 @@ impl Visitor for AggregateVisitor {
             let func_name = func.name.to_string();
             if self.is_aggregate_function(&func_name) {
                 // Check if we've already seen this exact aggregate expression
-                if let Some(existing_replacement) = self.find_existing_replacement(expr) {
+                if let Some(_existing_replacement) = self.find_existing_replacement(expr) {
                     // We've seen this exact aggregate before, skip it
                     return std::ops::ControlFlow::Continue(());
                 }
