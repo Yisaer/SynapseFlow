@@ -36,8 +36,8 @@ fn test_field_access_simple() {
     // Create a tuple with the struct value
     let tuple = Tuple::from_values(schema, vec![struct_value]);
 
-    // Create field access expression: column(0).x
-    let column_expr = ScalarExpr::column(0);
+    // Create field access expression: test_table.struct_col.x
+    let column_expr = ScalarExpr::column("test_table", "struct_col");
     let field_access_expr = ScalarExpr::field_access(column_expr, "x");
 
     // Create evaluator
@@ -80,8 +80,8 @@ fn test_field_access_string_field() {
     // Create a tuple with the struct value
     let tuple = Tuple::from_values(schema, vec![struct_value]);
 
-    // Create field access expression: column(0).y
-    let column_expr = ScalarExpr::column(0);
+    // Create field access expression: test_table.struct_col.y
+    let column_expr = ScalarExpr::column("test_table", "struct_col");
     let field_access_expr = ScalarExpr::field_access(column_expr, "y");
 
     // Create evaluator
@@ -136,8 +136,8 @@ fn test_field_access_nested() {
     // Create a tuple with the outer struct value
     let tuple = Tuple::from_values(schema, vec![outer_struct_value]);
 
-    // Create nested field access expression: column(0).inner.a
-    let column_expr = ScalarExpr::column(0);
+    // Create nested field access expression: test_table.outer_struct.inner.a
+    let column_expr = ScalarExpr::column("test_table", "outer_struct");
     let inner_access_expr = ScalarExpr::field_access(column_expr, "inner");
     let nested_access_expr = ScalarExpr::field_access(inner_access_expr, "a");
 
@@ -177,8 +177,8 @@ fn test_field_access_field_not_found() {
     // Create a tuple with the struct value
     let tuple = Tuple::from_values(schema, vec![struct_value]);
 
-    // Create field access expression for non-existent field: column(0).y
-    let column_expr = ScalarExpr::column(0);
+    // Create field access expression for non-existent field: test_table.struct_col.y
+    let column_expr = ScalarExpr::column("test_table", "struct_col");
     let field_access_expr = ScalarExpr::field_access(column_expr, "y");
 
     // Create evaluator
@@ -207,8 +207,8 @@ fn test_field_access_not_struct() {
     // Create a tuple with an Int32 value
     let tuple = Tuple::from_values(schema, vec![Value::Int32(42)]);
 
-    // Create field access expression on non-struct value: column(0).x
-    let column_expr = ScalarExpr::column(0);
+    // Create field access expression on non-struct value: test_table.int_col.x
+    let column_expr = ScalarExpr::column("test_table", "int_col");
     let field_access_expr = ScalarExpr::field_access(column_expr, "x");
 
     // Create evaluator

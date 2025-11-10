@@ -117,57 +117,108 @@ pub fn flow_schema_to_arrow_schema(flow_schema: &FlowSchema) -> DataFusionResult
 
 /// Convert a single Tuple to a RecordBatch
 pub fn tuple_to_record_batch(tuple: &Tuple) -> DataFusionResult<RecordBatch> {
-    let arrow_schema = flow_schema_to_arrow_schema(tuple.schema())?;
-    let columns: DataFusionResult<Vec<ArrayRef>> = tuple
-        .row()
-        .iter()
-        .zip(tuple.schema().column_schemas().iter())
-        .map(|(value, col_schema)| value_to_array(value, &col_schema.data_type))
+    // Extract all values from the tuple's HashMap
+    let data = tuple.data();
+    
+    if data.is_empty() {
+        return Err(DataFusionError::Execution("Cannot create RecordBatch from empty tuple".to_string()));
+    }
+    
+    // Collect all values and sort them for consistent ordering
+    let mut values: Vec<((String, String), Value)> = data.iter()
+        .map(|((source, col), value)| ((source.clone(), col.clone()), value.clone()))
         .collect();
     
-    RecordBatch::try_new(Arc::new(arrow_schema), columns?)
-        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
-}
-
-/// Convert flow Value to Arrow Array (single element array)
-fn value_to_array(value: &Value, datatype: &ConcreteDatatype) -> DataFusionResult<ArrayRef> {
-    match (value, datatype) {
-        (Value::Null, _) => {
-            // For null values, create an array with null
-            match datatype {
-                ConcreteDatatype::Int64(_) => Ok(Arc::new(Int64Array::from(vec![None])) as ArrayRef),
-                ConcreteDatatype::Float64(_) => Ok(Arc::new(Float64Array::from(vec![None])) as ArrayRef),
-                ConcreteDatatype::Uint8(_) => {
-                    use arrow::array::UInt8Array;
-                    Ok(Arc::new(UInt8Array::from(vec![None])) as ArrayRef)
-                }
-                ConcreteDatatype::String(_) => Ok(Arc::new(StringArray::from(vec![None as Option<&str>])) as ArrayRef),
-                ConcreteDatatype::Bool(_) => Ok(Arc::new(BooleanArray::from(vec![None])) as ArrayRef),
-                _ => Err(DataFusionError::NotImplemented(
-                    format!("Null array conversion for type {:?} not implemented", datatype)
-                )),
+    // Sort by source name, then column name for consistent ordering
+    values.sort_by(|a, b| {
+        a.0.0.cmp(&b.0.0).then_with(|| a.0.1.cmp(&b.0.1))
+    });
+    
+    // Create fields and arrays - one per value
+    let mut fields = Vec::new();
+    let mut arrays: Vec<ArrayRef> = Vec::new();
+    
+    for ((source_name, column_name), value) in values {
+        let field_name = format!("{}.{}", source_name, column_name);
+        
+        match value {
+            Value::Int64(v) => {
+                fields.push(Field::new(&field_name, DataType::Int64, true));
+                arrays.push(Arc::new(Int64Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Float64(v) => {
+                fields.push(Field::new(&field_name, DataType::Float64, true));
+                arrays.push(Arc::new(Float64Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::String(v) => {
+                fields.push(Field::new(&field_name, DataType::Utf8, true));
+                arrays.push(Arc::new(StringArray::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Bool(v) => {
+                fields.push(Field::new(&field_name, DataType::Boolean, true));
+                arrays.push(Arc::new(BooleanArray::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Int32(v) => {
+                // Keep original Int32 type for type consistency
+                fields.push(Field::new(&field_name, DataType::Int32, true));
+                arrays.push(Arc::new(arrow::array::Int32Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Uint8(v) => {
+                // Keep original UInt8 type for type consistency
+                fields.push(Field::new(&field_name, DataType::UInt8, true));
+                arrays.push(Arc::new(arrow::array::UInt8Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Int8(v) => {
+                // Keep original Int8 type for type consistency
+                fields.push(Field::new(&field_name, DataType::Int8, true));
+                arrays.push(Arc::new(arrow::array::Int8Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Int16(v) => {
+                // Keep original Int16 type for type consistency
+                fields.push(Field::new(&field_name, DataType::Int16, true));
+                arrays.push(Arc::new(arrow::array::Int16Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Float32(v) => {
+                // Keep original Float32 type for type consistency
+                fields.push(Field::new(&field_name, DataType::Float32, true));
+                arrays.push(Arc::new(arrow::array::Float32Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Uint16(v) => {
+                // Keep original UInt16 type for type consistency
+                fields.push(Field::new(&field_name, DataType::UInt16, true));
+                arrays.push(Arc::new(arrow::array::UInt16Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Uint32(v) => {
+                // Keep original UInt32 type for type consistency
+                fields.push(Field::new(&field_name, DataType::UInt32, true));
+                arrays.push(Arc::new(arrow::array::UInt32Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Uint64(v) => {
+                // Keep original UInt64 type for type consistency
+                fields.push(Field::new(&field_name, DataType::UInt64, true));
+                arrays.push(Arc::new(arrow::array::UInt64Array::from(vec![Some(v)])) as ArrayRef);
+            }
+            Value::Null => {
+                // For null values, we need to infer type from column name or skip
+                // For now, let's skip null values in RecordBatch creation
+                continue;
+            }
+            _ => {
+                return Err(DataFusionError::NotImplemented(
+                    format!("Value type {:?} not supported for RecordBatch conversion", value)
+                ));
             }
         }
-        (Value::Int64(v), ConcreteDatatype::Int64(_)) => {
-            Ok(Arc::new(Int64Array::from(vec![*v])) as ArrayRef)
-        }
-        (Value::Float64(v), ConcreteDatatype::Float64(_)) => {
-            Ok(Arc::new(Float64Array::from(vec![*v])) as ArrayRef)
-        }
-        (Value::Uint8(v), ConcreteDatatype::Uint8(_)) => {
-            use arrow::array::UInt8Array;
-            Ok(Arc::new(UInt8Array::from(vec![*v])) as ArrayRef)
-        }
-        (Value::String(v), ConcreteDatatype::String(_)) => {
-            Ok(Arc::new(StringArray::from(vec![v.as_str()])) as ArrayRef)
-        }
-        (Value::Bool(v), ConcreteDatatype::Bool(_)) => {
-            Ok(Arc::new(BooleanArray::from(vec![*v])) as ArrayRef)
-        }
-        _ => Err(DataFusionError::NotImplemented(
-            format!("Array conversion for value {:?} with type {:?} not implemented", value, datatype)
-        )),
     }
+    
+    if fields.is_empty() {
+        return Err(DataFusionError::Execution("No valid columns found for RecordBatch creation".to_string()));
+    }
+    
+    let arrow_schema = ArrowSchema::new(fields);
+    
+    RecordBatch::try_new(Arc::new(arrow_schema), arrays)
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
 }
 
 /// Create a DataFusion function call by name

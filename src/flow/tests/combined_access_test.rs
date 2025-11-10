@@ -49,7 +49,7 @@ fn test_struct_field_then_list_index() {
     let tuple = Tuple::from_values(schema, vec![struct_value]);
 
     // Create combined access expression: column(0).numbers[1]
-    let column_expr = ScalarExpr::column(0);
+    let column_expr = ScalarExpr::column("test_table", "struct_col");
     let field_access_expr = ScalarExpr::field_access(column_expr, "numbers");
     let index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
     let combined_expr = ScalarExpr::list_index(field_access_expr, index_expr);
@@ -121,7 +121,7 @@ fn test_list_index_then_struct_field() {
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
     // Create combined access expression: column(0)[1].y
-    let column_expr = ScalarExpr::column(0);
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
     let combined_expr = ScalarExpr::field_access(list_index_expr, "y");
@@ -200,7 +200,7 @@ fn test_complex_nested_access() {
     let tuple = Tuple::from_values(schema, vec![outer_struct_value]);
 
     // Create complex access expression: column(0).data[2].value
-    let column_expr = ScalarExpr::column(0);
+    let column_expr = ScalarExpr::column("test_table", "complex_col");
     let field_access_expr = ScalarExpr::field_access(column_expr, "data");
     let index_expr = ScalarExpr::literal(Value::Int64(2), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(field_access_expr, index_expr);
@@ -260,7 +260,7 @@ fn test_list_of_lists() {
     let tuple = Tuple::from_values(schema, vec![outer_list_value]);
 
     // Create nested list index expression: column(0)[1][2]
-    let column_expr = ScalarExpr::column(0);
+    let column_expr = ScalarExpr::column("test_table", "list_of_lists");
     let first_index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
     let first_list_index = ScalarExpr::list_index(column_expr, first_index_expr);
     let second_index_expr = ScalarExpr::literal(Value::Int64(2), ConcreteDatatype::Int64(datatypes::Int64Type));

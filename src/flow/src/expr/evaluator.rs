@@ -1,12 +1,10 @@
 //! DataFusion-based expression evaluator for flow tuples
 
 use arrow::record_batch::RecordBatch;
-use arrow::array::{ArrayRef, Int64Array, Float64Array, StringArray, BooleanArray};
 use datafusion::execution::context::SessionContext;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue, ToDFSchema};
 use datafusion_expr::{Expr, execution_props::ExecutionProps, lit};
-use datatypes::{Value, ConcreteDatatype};
-use std::sync::Arc;
+use datatypes::{Value};
 
 use crate::expr::datafusion_adapter::*;
 use crate::expr::ScalarExpr;
@@ -162,33 +160,11 @@ impl DataFusionEvaluator {
     }
 
     /// Create a RecordBatch from multiple tuples for batch evaluation
-    pub fn tuples_to_record_batch(tuples: &[Tuple]) -> DataFusionResult<RecordBatch> {
-        if tuples.is_empty() {
-            return Err(DataFusionError::Execution("Cannot create RecordBatch from empty tuples".to_string()));
-        }
-
-        // Use the schema from the first tuple
-        let schema = tuples[0].schema();
-        let arrow_schema = flow_schema_to_arrow_schema(schema)?;
-        
-        // Collect all values for each column
-        let mut columns: Vec<Vec<Value>> = vec![Vec::new(); schema.column_schemas().len()];
-        
-        for tuple in tuples {
-            for (i, value) in tuple.row().iter().enumerate() {
-                columns[i].push(value.clone());
-            }
-        }
-        
-        // Convert each column to Arrow array
-        let arrow_columns: DataFusionResult<Vec<ArrayRef>> = columns
-            .into_iter()
-            .zip(schema.column_schemas().iter())
-            .map(|(values, col_schema)| values_to_array(values, &col_schema.data_type))
-            .collect();
-        
-        RecordBatch::try_new(Arc::new(arrow_schema), arrow_columns?)
-            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    pub fn tuples_to_record_batch(_tuples: &[Tuple]) -> DataFusionResult<RecordBatch> {
+        // For now, this is not implemented with the new Tuple design
+        Err(DataFusionError::NotImplemented(
+            "Batch evaluation not yet implemented for the new Tuple design".to_string()
+        ))
     }
 }
 
@@ -198,82 +174,10 @@ impl Default for DataFusionEvaluator {
     }
 }
 
-/// Convert multiple flow Values to Arrow Array
-fn values_to_array(values: Vec<Value>, datatype: &ConcreteDatatype) -> DataFusionResult<ArrayRef> {
-    match datatype {
-        ConcreteDatatype::Int64(_) => {
-            let int_values: Vec<i64> = values
-                .into_iter()
-                .map(|v| match v {
-                    Value::Int64(i) => Ok(i),
-                    _ => Err(DataFusionError::Internal(
-                        format!("Expected Int64 value, got {:?}", v)
-                    )),
-                })
-                .collect::<DataFusionResult<_>>()?;
-            Ok(Arc::new(Int64Array::from(int_values)) as ArrayRef)
-        }
-        ConcreteDatatype::Float64(_) => {
-            let float_values: Vec<f64> = values
-                .into_iter()
-                .map(|v| match v {
-                    Value::Float64(f) => Ok(f),
-                    _ => Err(DataFusionError::Internal(
-                        format!("Expected Float64 value, got {:?}", v)
-                    )),
-                })
-                .collect::<DataFusionResult<_>>()?;
-            Ok(Arc::new(Float64Array::from(float_values)) as ArrayRef)
-        }
-        ConcreteDatatype::String(_) => {
-            let string_values: Vec<String> = values
-                .into_iter()
-                .map(|v| match v {
-                    Value::String(s) => Ok(s),
-                    _ => Err(DataFusionError::Internal(
-                        format!("Expected String value, got {:?}", v)
-                    )),
-                })
-                .collect::<DataFusionResult<_>>()?;
-            Ok(Arc::new(StringArray::from(string_values)) as ArrayRef)
-        }
-        ConcreteDatatype::Bool(_) => {
-            let bool_values: Vec<bool> = values
-                .into_iter()
-                .map(|v| match v {
-                    Value::Bool(b) => Ok(b),
-                    _ => Err(DataFusionError::Internal(
-                        format!("Expected Bool value, got {:?}", v)
-                    )),
-                })
-                .collect::<DataFusionResult<_>>()?;
-            Ok(Arc::new(BooleanArray::from(bool_values)) as ArrayRef)
-        }
-        ConcreteDatatype::Uint8(_) => {
-            let uint8_values: Vec<u8> = values
-                .into_iter()
-                .map(|v| match v {
-                    Value::Uint8(u) => Ok(u),
-                    _ => Err(DataFusionError::Internal(
-                        format!("Expected Uint8 value, got {:?}", v)
-                    )),
-                })
-                .collect::<DataFusionResult<_>>()?;
-            // Use UInt8Array from arrow
-            use arrow::array::UInt8Array;
-            Ok(Arc::new(UInt8Array::from(uint8_values)) as ArrayRef)
-        }
-        _ => Err(DataFusionError::NotImplemented(
-            format!("Array conversion for type {:?} not implemented", datatype)
-        )),
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datatypes::{ColumnSchema, Int64Type, StringType, Float64Type, BooleanType};
+    use datatypes::{ColumnSchema, Int64Type, StringType, Float64Type, BooleanType, ConcreteDatatype};
 
     fn create_test_tuple() -> Tuple {
         let schema = datatypes::Schema::new(vec![
@@ -303,7 +207,7 @@ mod tests {
         let tuple = create_test_tuple();
 
         // Test column reference using direct eval (with DataFusionEvaluator)
-        let col_expr = ScalarExpr::column(0);
+        let col_expr = ScalarExpr::column("test_table", "id");
         let result = col_expr.eval(&evaluator, &tuple).unwrap();
         assert_eq!(result, Value::Int64(1));
 
@@ -319,7 +223,7 @@ mod tests {
         let tuple = create_test_tuple();
 
         // Test concat function via CallDf
-        let name_col = ScalarExpr::column(1); // name column
+        let name_col = ScalarExpr::column("test_table", "name"); // name column
         let lit_expr = ScalarExpr::literal(Value::String(" Smith".to_string()), ConcreteDatatype::String(StringType));
         let concat_expr = ScalarExpr::CallDf {
             function_name: "concat".to_string(),

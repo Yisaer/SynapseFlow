@@ -33,8 +33,8 @@ fn test_list_index_simple() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression: column(0)[0]
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression: test_table.list_col[0]
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(0), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -75,8 +75,8 @@ fn test_list_index_middle() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression: column(0)[1]
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression: test_table.list_col[1]
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -117,8 +117,8 @@ fn test_list_index_last() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression: column(0)[2]
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression: test_table.list_col[2]
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(2), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -158,8 +158,8 @@ fn test_list_index_string_list() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression: column(0)[1]
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression: test_table.list_col[1]
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -200,8 +200,8 @@ fn test_list_index_out_of_bounds() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression: column(0)[3] (out of bounds)
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression: test_table.list_col[3] (out of bounds)
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(3), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -244,8 +244,8 @@ fn test_list_index_negative_index() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression: column(0)[-1] (negative index)
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression: test_table.list_col[-1] (negative index)
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::Int64(-1), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -275,8 +275,8 @@ fn test_list_index_not_list() {
     // Create a tuple with an Int32 value
     let tuple = Tuple::from_values(schema, vec![Value::Int32(42)]);
 
-    // Create list index expression on non-list value: column(0)[0]
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression on non-list value: test_table.int_col[0]
+    let column_expr = ScalarExpr::column("test_table", "int_col");
     let index_expr = ScalarExpr::literal(Value::Int64(0), ConcreteDatatype::Int64(datatypes::Int64Type));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -319,8 +319,8 @@ fn test_list_index_invalid_index_type() {
     // Create a tuple with the list value
     let tuple = Tuple::from_values(schema, vec![list_value]);
 
-    // Create list index expression with non-integer index: column(0)["hello"]
-    let column_expr = ScalarExpr::column(0);
+    // Create list index expression with non-integer index: test_table.list_col["hello"]
+    let column_expr = ScalarExpr::column("test_table", "list_col");
     let index_expr = ScalarExpr::literal(Value::String("hello".to_string()), ConcreteDatatype::String(StringType));
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
@@ -366,9 +366,9 @@ fn test_list_index_dynamic_index() {
     // Create a tuple with the list value and index value
     let tuple = Tuple::from_values(schema, vec![list_value, Value::Int64(3)]);
 
-    // Create list index expression: column(0)[column(1)] where column(1) = 3
-    let list_expr = ScalarExpr::column(0);
-    let index_expr = ScalarExpr::column(1);
+    // Create list index expression: test_table.list_col[test_table.index_col] where index_col = 3
+    let list_expr = ScalarExpr::column("test_table", "list_col");
+    let index_expr = ScalarExpr::column("test_table", "index_col");
     let list_index_expr = ScalarExpr::list_index(list_expr, index_expr);
 
     // Create evaluator

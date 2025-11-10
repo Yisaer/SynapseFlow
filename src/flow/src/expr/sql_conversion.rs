@@ -1,7 +1,7 @@
 use super::func::{BinaryFunc, UnaryFunc};
 use super::scalar::ScalarExpr;
 use datatypes::{
-    BooleanType, ConcreteDatatype, Float64Type, Int64Type, Schema, StringType, Value,
+    BooleanType, ConcreteDatatype, Float64Type, Int64Type, StringType, Value,
 };
 use sqlparser::ast::{
     BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, Ident, UnaryOperator,
@@ -113,22 +113,22 @@ fn convert_unary_op(op: &UnaryOperator) -> Result<UnaryFunc, ConversionError> {
     }
 }
 
-/// Convert sqlparser Expression to flow ScalarExpr with schema support
-pub fn convert_expr_to_scalar(expr: &Expr, schema: &Schema) -> Result<ScalarExpr, ConversionError> {
+/// Convert sqlparser Expression to flow ScalarExpr
+pub fn convert_expr_to_scalar(expr: &Expr) -> Result<ScalarExpr, ConversionError> {
     match expr {
         // Simple column reference like "a"
-        Expr::Identifier(ident) => convert_identifier_to_column(ident, schema),
+        Expr::Identifier(ident) => convert_identifier_to_column(ident),
 
         // Compound identifier like "table.column" or "db.table.column"
-        Expr::CompoundIdentifier(idents) => convert_compound_identifier_to_column(idents, schema),
+        Expr::CompoundIdentifier(idents) => convert_compound_identifier_to_column(idents),
 
         // Literals like 1, 'hello', true
         Expr::Value(value) => convert_sql_value_to_scalar(value),
 
         // Binary operations like a + b, a * b
         Expr::BinaryOp { left, op, right } => {
-            let left_expr = convert_expr_to_scalar(left, schema)?;
-            let right_expr = convert_expr_to_scalar(right, schema)?;
+            let left_expr = convert_expr_to_scalar(left)?;
+            let right_expr = convert_expr_to_scalar(right)?;
             let binary_func = convert_binary_op(op)?;
 
             Ok(ScalarExpr::CallBinary {
@@ -140,7 +140,7 @@ pub fn convert_expr_to_scalar(expr: &Expr, schema: &Schema) -> Result<ScalarExpr
 
         // Unary operations like -a, NOT b
         Expr::UnaryOp { op, expr: operand } => {
-            let operand_expr = convert_expr_to_scalar(operand, schema)?;
+            let operand_expr = convert_expr_to_scalar(operand)?;
             let unary_func = convert_unary_op(op)?;
 
             Ok(ScalarExpr::CallUnary {
@@ -151,11 +151,11 @@ pub fn convert_expr_to_scalar(expr: &Expr, schema: &Schema) -> Result<ScalarExpr
 
         // Function calls like CONCAT(a, b), UPPER(name)
         Expr::Function(Function { name, args, .. }) => {
-            convert_function_call_with_schema(name, args, schema)
+            convert_function_call(name, args)
         }
 
         // Parenthesized expressions like (a + b)
-        Expr::Nested(inner_expr) => convert_expr_to_scalar(inner_expr, schema),
+        Expr::Nested(inner_expr) => convert_expr_to_scalar(inner_expr),
 
         // BETWEEN expressions like a BETWEEN 1 AND 10
         Expr::Between {
@@ -163,11 +163,11 @@ pub fn convert_expr_to_scalar(expr: &Expr, schema: &Schema) -> Result<ScalarExpr
             low,
             high,
             negated,
-        } => convert_between_expression_with_schema(expr, low, high, *negated, schema),
+        } => convert_between_expression(expr, low, high, *negated),
 
         // IN expressions like a IN (1, 2, 3)
         Expr::InList { expr, list, negated } => {
-            convert_in_list_expression_with_schema(expr, list, *negated, schema)
+            convert_in_list_expression(expr, list, *negated)
         }
 
         // CASE expressions
@@ -176,68 +176,52 @@ pub fn convert_expr_to_scalar(expr: &Expr, schema: &Schema) -> Result<ScalarExpr
             conditions,
             results,
             else_result,
-        } => convert_case_expression_with_schema(operand, conditions, results, else_result, schema),
+        } => convert_case_expression(operand, conditions, results, else_result),
 
         // Struct field access like a->b
         Expr::JsonAccess { left, operator, right } => {
-            convert_json_access_with_schema(left, operator, right, schema)
+            convert_json_access(left, operator, right)
         }
 
         // List indexing like a[0]
         Expr::MapAccess { column, keys } => {
-            convert_map_access_with_schema(column, keys, schema)
+            convert_map_access(column, keys)
         }
 
         _ => Err(ConversionError::UnsupportedExpression(format!("{:?}", expr))),
     }
 }
 
-/// Convert simple Identifier to Column reference using schema
+/// Convert simple Identifier to Column reference
 fn convert_identifier_to_column(
     ident: &Ident,
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     let column_name = &ident.value;
 
-    if let Some(index) = schema
-        .column_schemas()
-        .iter()
-        .position(|col| col.name == *column_name)
-    {
-        Ok(ScalarExpr::column(index))
-    } else {
-        Err(ConversionError::ColumnNotFound(column_name.clone()))
-    }
+    // For simple identifiers without source, we'll use "default" as source_name
+    // This matches the behavior in Tuple::new_from_json for simple column names
+    Ok(ScalarExpr::column("default", column_name))
 }
 
-/// Convert CompoundIdentifier to Column reference using schema
+/// Convert CompoundIdentifier to Column reference
 /// Only handles cases 1 and 2 as specified:
 /// - Case 1: simple identifier (already handled by convert_identifier_to_column)
 /// - Case 2: table.column format where we use both source_name and column_name
 fn convert_compound_identifier_to_column(
     idents: &[Ident],
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     match idents.len() {
         1 => {
             // Simple identifier case - delegate to existing function
-            convert_identifier_to_column(&idents[0], schema)
+            convert_identifier_to_column(&idents[0])
         }
         2 => {
-            // table.column format - use both source_name and column_name
+            // table.column format - use both source_name and column_name directly
             let source_name = &idents[0].value;
             let column_name = &idents[1].value;
 
-            if let Some(index) = schema.column_schemas().iter().position(|col| {
-                col.name == *column_name && col.belongs_to(source_name)
-            }) {
-                Ok(ScalarExpr::column(index))
-            } else {
-                Err(ConversionError::ColumnNotFound(format!(
-                    "{}.{} (source: {}, column: {})",
-                    source_name, column_name, source_name, column_name
-                )))
-            }
+            // No need to validate - just create the column reference
+            Ok(ScalarExpr::column(source_name, column_name))
         }
         _ => Err(ConversionError::InvalidColumnReference(format!(
             "Unsupported compound identifier with {} parts. Only 1 or 2 parts are supported.",
@@ -247,17 +231,16 @@ fn convert_compound_identifier_to_column(
 }
 
 /// Convert JsonAccess (struct field access like a->b) to ScalarExpr
-fn convert_json_access_with_schema(
+fn convert_json_access(
     left: &Expr,
     operator: &sqlparser::ast::JsonOperator,
     right: &Expr,
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     // Only support Arrow operator for now
     match operator {
         sqlparser::ast::JsonOperator::Arrow => {
             // Convert the struct container (left side)
-            let struct_expr = convert_expr_to_scalar(left, schema)?;
+            let struct_expr = convert_expr_to_scalar(left)?;
 
             // Convert the field name (right side) - should be an identifier
             let field_name = match right {
@@ -277,10 +260,9 @@ fn convert_json_access_with_schema(
 }
 
 /// Convert MapAccess (list indexing like a[0]) to ScalarExpr
-fn convert_map_access_with_schema(
+fn convert_map_access(
     column: &Expr,
     keys: &[Expr],
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     if keys.is_empty() {
         return Err(ConversionError::UnsupportedExpression(
@@ -295,20 +277,19 @@ fn convert_map_access_with_schema(
     }
 
     // Convert the container (column)
-    let container_expr = convert_expr_to_scalar(column, schema)?;
+    let container_expr = convert_expr_to_scalar(column)?;
 
     // Convert the key (index) - should be a literal value
-    let key_expr = convert_expr_to_scalar(&keys[0], schema)?;
+    let key_expr = convert_expr_to_scalar(&keys[0])?;
 
     // Use the proper ListIndex variant instead of CallDf
     Ok(ScalarExpr::list_index(container_expr, key_expr))
 }
 
-/// Convert function call with schema context
-fn convert_function_call_with_schema(
+/// Convert function call
+fn convert_function_call(
     name: &sqlparser::ast::ObjectName,
     args: &[FunctionArg],
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     let function_name = name.to_string();
     let mut scalar_args = Vec::new();
@@ -316,13 +297,13 @@ fn convert_function_call_with_schema(
     for arg in args {
         match arg {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
-                scalar_args.push(convert_expr_to_scalar(expr, schema)?);
+                scalar_args.push(convert_expr_to_scalar(expr)?);
             }
             FunctionArg::Named {
                 arg: FunctionArgExpr::Expr(arg),
                 ..
             } => {
-                scalar_args.push(convert_expr_to_scalar(arg, schema)?);
+                scalar_args.push(convert_expr_to_scalar(arg)?);
             }
             _ => {
                 return Err(ConversionError::UnsupportedExpression(
@@ -338,17 +319,16 @@ fn convert_function_call_with_schema(
     })
 }
 
-/// Convert BETWEEN expression with schema
-fn convert_between_expression_with_schema(
+/// Convert BETWEEN expression
+fn convert_between_expression(
     expr: &Expr,
     low: &Expr,
     high: &Expr,
     negated: bool,
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
-    let value_expr = convert_expr_to_scalar(expr, schema)?;
-    let low_expr = convert_expr_to_scalar(low, schema)?;
-    let high_expr = convert_expr_to_scalar(high, schema)?;
+    let value_expr = convert_expr_to_scalar(expr)?;
+    let low_expr = convert_expr_to_scalar(low)?;
+    let high_expr = convert_expr_to_scalar(high)?;
 
     let lower_bound = ScalarExpr::CallBinary {
         func: BinaryFunc::Gte,
@@ -378,12 +358,11 @@ fn convert_between_expression_with_schema(
     }
 }
 
-/// Convert IN LIST expression with schema
-fn convert_in_list_expression_with_schema(
+/// Convert IN LIST expression
+fn convert_in_list_expression(
     expr: &Expr,
     list: &[Expr],
     negated: bool,
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     if list.is_empty() {
         return Ok(ScalarExpr::Literal(
@@ -392,11 +371,11 @@ fn convert_in_list_expression_with_schema(
         ));
     }
 
-    let value_expr = convert_expr_to_scalar(expr, schema)?;
+    let value_expr = convert_expr_to_scalar(expr)?;
     let mut result_expr = None;
 
     for list_item in list {
-        let item_expr = convert_expr_to_scalar(list_item, schema)?;
+        let item_expr = convert_expr_to_scalar(list_item)?;
         let comparison = ScalarExpr::CallBinary {
             func: BinaryFunc::Eq,
             expr1: Box::new(value_expr.clone()),
@@ -425,18 +404,17 @@ fn convert_in_list_expression_with_schema(
     }
 }
 
-/// Convert CASE expression with schema
-fn convert_case_expression_with_schema(
+/// Convert CASE expression
+fn convert_case_expression(
     operand: &Option<Box<Expr>>,
     conditions: &[Expr],
     results: &[Expr],
     else_result: &Option<Box<Expr>>,
-    schema: &Schema,
 ) -> Result<ScalarExpr, ConversionError> {
     // For simplicity, convert to a chain of IF-THEN-ELSE
     // In a real implementation, you might want to handle this more efficiently
     let mut current_expr = if let Some(else_expr) = else_result {
-        convert_expr_to_scalar(else_expr, schema)?
+        convert_expr_to_scalar(else_expr)?
     } else {
         ScalarExpr::Literal(
             Value::Null,
@@ -451,8 +429,8 @@ fn convert_case_expression_with_schema(
 
         let condition_expr = if let Some(operand_expr) = operand {
             // Simple CASE: operand WHEN value THEN result
-            let operand_scalar = convert_expr_to_scalar(operand_expr, schema)?;
-            let value_scalar = convert_expr_to_scalar(condition, schema)?;
+            let operand_scalar = convert_expr_to_scalar(operand_expr)?;
+            let value_scalar = convert_expr_to_scalar(condition)?;
             ScalarExpr::CallBinary {
                 func: BinaryFunc::Eq,
                 expr1: Box::new(operand_scalar),
@@ -460,10 +438,10 @@ fn convert_case_expression_with_schema(
             }
         } else {
             // Searched CASE: WHEN condition THEN result
-            convert_expr_to_scalar(condition, schema)?
+            convert_expr_to_scalar(condition)?
         };
 
-        let result_expr = convert_expr_to_scalar(result, schema)?;
+        let result_expr = convert_expr_to_scalar(result)?;
 
         // This is a simplified implementation - in practice you'd need proper conditional evaluation
         current_expr = ScalarExpr::CallBinary {
@@ -476,10 +454,9 @@ fn convert_case_expression_with_schema(
     Ok(current_expr)
 }
 
-/// Enhanced version of extract_select_expressions with schema support
+/// Extract expressions from SQL SELECT statement
 pub fn extract_select_expressions(
     sql: &str,
-    schema: &Schema,
 ) -> Result<Vec<ScalarExpr>, ConversionError> {
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
@@ -504,10 +481,10 @@ pub fn extract_select_expressions(
                 for item in &select.projection {
                     match item {
                         sqlparser::ast::SelectItem::UnnamedExpr(expr) => {
-                            expressions.push(convert_expr_to_scalar(expr, schema)?);
+                            expressions.push(convert_expr_to_scalar(expr)?);
                         }
                         sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => {
-                            expressions.push(convert_expr_to_scalar(expr, schema)?);
+                            expressions.push(convert_expr_to_scalar(expr)?);
                         }
                         _ => {
                             return Err(ConversionError::UnsupportedExpression(
@@ -532,12 +509,11 @@ pub fn extract_select_expressions(
 /// Convert SelectStmt to ScalarExpr with aliases
 pub fn convert_select_stmt_to_scalar(
     select_stmt: &parser::SelectStmt,
-    schema: &Schema,
 ) -> Result<Vec<(ScalarExpr, Option<String>)>, ConversionError> {
     let mut results = Vec::new();
 
     for field in &select_stmt.select_fields {
-        let scalar_expr = convert_expr_to_scalar(&field.expr, schema)?;
+        let scalar_expr = convert_expr_to_scalar(&field.expr)?;
         results.push((scalar_expr, field.alias.clone()));
     }
 
@@ -554,18 +530,16 @@ impl StreamSqlConverter {
     pub fn convert_select_stmt(
         &self,
         select_stmt: &parser::SelectStmt,
-        schema: &Schema,
     ) -> Result<Vec<(ScalarExpr, Option<String>)>, ConversionError> {
         // 核心转换：SelectStmt → ScalarExpr
-        convert_select_stmt_to_scalar(select_stmt, schema)
+        convert_select_stmt_to_scalar(select_stmt)
     }
 
     pub fn convert_select_stmt_to_scalar(
         &self,
         select_stmt: &parser::SelectStmt,
-        schema: &Schema,
     ) -> Result<Vec<ScalarExpr>, ConversionError> {
-        let results = self.convert_select_stmt(select_stmt, schema)?;
+        let results = self.convert_select_stmt(select_stmt)?;
         Ok(results.into_iter().map(|(expr, _)| expr).collect())
     }
 }
@@ -576,40 +550,4 @@ impl Default for StreamSqlConverter {
     }
 }
 
-/// 便捷函数：SQL字符串 → SelectStmt → ScalarExpr（带别名）
-/// 完整流程：先解析SQL得到SelectStmt，然后转换为ScalarExpr
-pub fn extract_select_expressions_with_aliases(
-    sql: &str,
-    schema: &Schema,
-) -> Result<Vec<(ScalarExpr, Option<String>)>, ConversionError> {
-    // 步骤1: 使用StreamDialect解析SQL得到SelectStmt
-    let select_stmt = parser::parse_sql(sql)
-        .map_err(|e| ConversionError::UnsupportedExpression(format!("Parse error: {}", e)))?;
 
-    // 步骤2: 使用StreamSqlConverter转换SelectStmt为ScalarExpr
-    let converter = StreamSqlConverter::new();
-    converter.convert_select_stmt(&select_stmt, schema)
-}
-
-/// Backward compatibility: convert single expression
-pub fn convert_expr_to_scalar_with_schema(
-    expr: &Expr,
-    schema: &Schema,
-) -> Result<ScalarExpr, ConversionError> {
-    convert_expr_to_scalar(expr, schema)
-}
-
-/// 便捷函数：SQL字符串 → SelectStmt → ScalarExpr（不带别名）
-/// 完整流程：先解析SQL得到SelectStmt，然后转换为ScalarExpr
-pub fn parse_sql_to_scalar_expr(
-    sql: &str,
-    schema: &Schema,
-) -> Result<Vec<ScalarExpr>, ConversionError> {
-    // 步骤1: 使用StreamDialect解析SQL得到SelectStmt
-    let select_stmt = parser::parse_sql(sql)
-        .map_err(|e| ConversionError::UnsupportedExpression(format!("Parse error: {}", e)))?;
-
-    // 步骤2: 使用StreamSqlConverter转换SelectStmt为ScalarExpr
-    let converter = StreamSqlConverter::new();
-    converter.convert_select_stmt_to_scalar(&select_stmt, schema)
-}

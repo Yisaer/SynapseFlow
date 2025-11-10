@@ -4,9 +4,10 @@
 //! Core flow: directly receive SelectStmt, convert to ScalarExpr, verify calculation results
 
 use flow::{StreamSqlConverter, DataFusionEvaluator, ScalarExpr};
-use flow::model::{Row, Tuple};
-use datatypes::{Schema, ColumnSchema, ConcreteDatatype, Int64Type, StringType, Value};
+use flow::model::Tuple;
+use datatypes::Value;
 use parser::parse_sql;
+use std::collections::HashMap;
 
 #[test]
 fn test_core_conversion_flow() {
@@ -14,13 +15,7 @@ fn test_core_conversion_flow() {
     println!("Core demonstration: SelectStmt → ScalarExpr → Calculation Results");
     println!("Test SQL: SELECT a+b, 42");
     
-    // 1. Create test schema
-    let schema = Schema::new(vec![
-        ColumnSchema::new("a".to_string(), "test_table".to_string(), ConcreteDatatype::Int64(Int64Type)),
-        ColumnSchema::new("b".to_string(), "test_table".to_string(), ConcreteDatatype::Int64(Int64Type)),
-    ]);
-    
-    // 2. Use parser module to parse SQL and get SelectStmt
+    // 1. Use parser module to parse SQL and get SelectStmt
     println!("\nStep 1: Use parser module to parse SQL");
     let sql = "SELECT a+b, 42";
     println!("Input SQL: {}", sql);
@@ -28,24 +23,24 @@ fn test_core_conversion_flow() {
     let select_stmt = parse_sql(sql).expect("StreamDialect parsing should succeed");
     println!("Successfully got SelectStmt with {} fields", select_stmt.select_fields.len());
     
-    // 3. View SelectStmt structure (verify input is correct)
+    // 2. View SelectStmt structure (verify input is correct)
     println!("Step 2: SelectStmt structure validation");
     for (i, field) in select_stmt.select_fields.iter().enumerate() {
         println!("  Field {}: {:?}", i + 1, field.expr);
         println!("         Alias: {:?}", field.alias);
     }
     
-    // 4. Core conversion: use StreamSqlConverter to convert SelectStmt to ScalarExpr
+    // 3. Core conversion: use StreamSqlConverter to convert SelectStmt to ScalarExpr
     println!("Step 3: Core conversion - SelectStmt → ScalarExpr");
     let converter = StreamSqlConverter::new();
-    let expressions = converter.convert_select_stmt_to_scalar(&select_stmt, &schema)
+    let expressions = converter.convert_select_stmt_to_scalar(&select_stmt)
         .expect("SelectStmt conversion should succeed");
     
-    // 5. Verify conversion results
+    // 4. Verify conversion results
     println!("Successfully got {} ScalarExpr", expressions.len());
     assert_eq!(expressions.len(), 2, "Should get 2 expressions");
     
-    // 6. Detailed validation of each expression
+    // 5. Detailed validation of each expression
     println!("Step 4: Expression detailed validation");
     
     // First expression: a + b
@@ -56,10 +51,12 @@ fn test_core_conversion_flow() {
             
             // Verify operand mapping
             match (expr1.as_ref(), expr2.as_ref()) {
-                (ScalarExpr::Column(idx1), ScalarExpr::Column(idx2)) => {
-                    println!("Operands correctly mapped to columns {} + {}", idx1, idx2);
-                    assert_eq!(*idx1, 0, "First operand should be column 0 (a)");
-                    assert_eq!(*idx2, 1, "Second operand should be column 1 (b)");
+                (ScalarExpr::Column { source_name: src1, column_name: col1 }, ScalarExpr::Column { source_name: src2, column_name: col2 }) => {
+                    println!("Operands correctly mapped to columns {}.{} + {}.{}", src1, col1, src2, col2);
+                    assert_eq!(src1, "default", "First operand should be from default source");
+                    assert_eq!(col1, "a", "First operand should be column 'a'");
+                    assert_eq!(src2, "default", "Second operand should be from default source");
+                    assert_eq!(col2, "b", "Second operand should be column 'b'");
                 }
                 _ => panic!("Operands should be column references"),
             }
@@ -76,14 +73,15 @@ fn test_core_conversion_flow() {
         _ => panic!("Second expression should be literal"),
     }
     
-    // 7. Create test data for calculation verification
+    // 6. Create test data for calculation verification
     println!("Step 5: Calculation results verification");
     let evaluator = DataFusionEvaluator::new();
-    let test_data = Row::from(vec![
-        Value::Int64(5),  // a = 5
-        Value::Int64(3),  // b = 3
-    ]);
-    let tuple = Tuple::new(schema, test_data);
+    
+    // Create tuple with HashMap data matching our column references
+    let mut data = HashMap::new();
+    data.insert(("default".to_string(), "a".to_string()), Value::Int64(5));  // a = 5
+    data.insert(("default".to_string(), "b".to_string()), Value::Int64(3));  // b = 3
+    let tuple = Tuple::new(data);
     
     // Calculate first expression: a + b = 5 + 3 = 8
     let result1 = expressions[0].eval(&evaluator, &tuple).expect("Calculation should succeed");
@@ -106,13 +104,7 @@ fn test_mixed_struct_and_list_access() {
     println!("Test SQL: SELECT a->b, c[0]");
     println!("Goal: Verify both struct field access (a->b) and list indexing (c[0]) work correctly");
     
-    // 1. Create test schema with struct and list columns
-    let schema = Schema::new(vec![
-        ColumnSchema::new("a".to_string(), "test_table".to_string(), ConcreteDatatype::String(StringType)), // struct field
-        ColumnSchema::new("c".to_string(), "test_table".to_string(), ConcreteDatatype::String(StringType)), // list field  
-    ]);
-    
-    // 2. Use parser module to parse SQL with mixed access patterns
+    // 1. Use parser module to parse SQL with mixed access patterns
     println!("\nStep 1: Parse SQL with mixed struct and list access");
     let sql = "SELECT a->b, c[0]";
     println!("Input SQL: {}", sql);
@@ -120,24 +112,24 @@ fn test_mixed_struct_and_list_access() {
     let select_stmt = parse_sql(sql).expect("StreamDialect parsing should succeed");
     println!("Successfully got SelectStmt with {} fields", select_stmt.select_fields.len());
     
-    // 3. View SelectStmt structure (verify parser correctly identified both access types)
+    // 2. View SelectStmt structure (verify parser correctly identified both access types)
     println!("Step 2: SelectStmt structure validation");
     for (i, field) in select_stmt.select_fields.iter().enumerate() {
         println!("  Field {}: {:?}", i + 1, field.expr);
         println!("         Alias: {:?}", field.alias);
     }
     
-    // 4. Core conversion: convert SelectStmt to ScalarExpr
+    // 3. Core conversion: convert SelectStmt to ScalarExpr
     println!("Step 3: Core conversion - SelectStmt → ScalarExpr");
     let converter = StreamSqlConverter::new();
-    let expressions = converter.convert_select_stmt_to_scalar(&select_stmt, &schema)
+    let expressions = converter.convert_select_stmt_to_scalar(&select_stmt)
         .expect("SelectStmt conversion should succeed");
     
-    // 5. Verify conversion results
+    // 4. Verify conversion results
     println!("Successfully got {} ScalarExpr", expressions.len());
     assert_eq!(expressions.len(), 2, "Should get 2 expressions");
     
-    // 6. Detailed validation of each expression with assertions
+    // 5. Detailed validation of each expression with assertions
     println!("Step 4: Expression detailed validation with assertions");
     
     // First expression: a->b (struct field access)
@@ -149,11 +141,12 @@ fn test_mixed_struct_and_list_access() {
             // Assert field name is correct
             assert_eq!(field_name, "b", "Field name should be 'b'");
             
-            // Assert the base expression is a column reference to column 0 (struct 'a')
+            // Assert the base expression is a column reference to default.a
             match expr.as_ref() {
-                ScalarExpr::Column(idx) => {
-                    assert_eq!(*idx, 0, "Base expression should reference column 0 (struct 'a')");
-                    println!("✓ Base expression correctly references column 0 (struct 'a')");
+                ScalarExpr::Column { source_name, column_name } => {
+                    assert_eq!(source_name, "default", "Base expression should reference default source");
+                    assert_eq!(column_name, "a", "Base expression should reference column 'a'");
+                    println!("✓ Base expression correctly references default.a");
                 }
                 _ => panic!("Base expression should be Column reference"),
             }
@@ -167,11 +160,12 @@ fn test_mixed_struct_and_list_access() {
         ScalarExpr::ListIndex { expr, index_expr } => {
             println!("✓ Second expression is ListIndex: {:?}[{:?}]", expr, index_expr);
             
-            // Assert the base expression is a column reference to column 1 (list 'c')
+            // Assert the base expression is a column reference to default.c
             match expr.as_ref() {
-                ScalarExpr::Column(idx) => {
-                    assert_eq!(*idx, 1, "Base expression should reference column 1 (list 'c')");
-                    println!("✓ Base expression correctly references column 1 (list 'c')");
+                ScalarExpr::Column { source_name, column_name } => {
+                    assert_eq!(source_name, "default", "Base expression should reference default source");
+                    assert_eq!(column_name, "c", "Base expression should reference column 'c'");
+                    println!("✓ Base expression correctly references default.c");
                 }
                 _ => panic!("Base expression should be Column reference"),
             }
