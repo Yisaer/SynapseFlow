@@ -1,7 +1,5 @@
-use flow::sql_conversion::extract_select_expressions;
-use flow::expr::{DataFusionEvaluator, ScalarExpr, BinaryFunc};
-use flow::tuple::Tuple;
-use flow::row::Row;
+use flow::expr::{DataFusionEvaluator, ScalarExpr, BinaryFunc, extract_select_expressions};
+use flow::model::{Row, Tuple};
 use datatypes::{Value, ConcreteDatatype, Int64Type, Schema, ColumnSchema};
 use parser::{extract_expressions_from_sql, analyze_sql_expressions};
 

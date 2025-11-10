@@ -3,7 +3,7 @@ use datatypes::value::ListValue;
 use datatypes::types::ListType;
 use flow::expr::scalar::ScalarExpr;
 use flow::expr::evaluator::DataFusionEvaluator;
-use flow::tuple::Tuple;
+use flow::model::Tuple;
 use std::sync::Arc;
 
 /// Tests basic list index access functionality

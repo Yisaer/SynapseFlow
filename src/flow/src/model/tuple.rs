@@ -1,8 +1,7 @@
+use super::row::Row;
 use datatypes::{ConcreteDatatype, DataType, ListValue, Schema, StructValue, Value};
-use std::sync::Arc;
 use serde_json::Value as JsonValue;
-
-use crate::row::Row;
+use std::sync::Arc;
 
 /// Tuple represents a row of data with its associated schema.
 ///
@@ -97,8 +96,8 @@ impl Tuple {
     /// Returns a `Result` with the created `Tuple` or an error if JSON parsing fails
     /// or if the JSON doesn't match the schema.
     pub fn new_from_json(schema: Schema, json_bytes: &[u8]) -> Result<Self, JsonError> {
-        let json_value: JsonValue = serde_json::from_slice(json_bytes)
-            .map_err(|e| JsonError::ParseError(e.to_string()))?;
+        let json_value: JsonValue =
+            serde_json::from_slice(json_bytes).map_err(|e| JsonError::ParseError(e.to_string()))?;
 
         let json_obj = json_value
             .as_object()
@@ -122,42 +121,43 @@ impl Tuple {
 /// Convert a JSON value to a Value based on the expected data type
 /// For basic types, only supports: string, bool, int64, float64
 /// For complex types, supports: struct (from JSON object), list (from JSON array)
-fn json_value_to_value(json_val: &JsonValue, data_type: &ConcreteDatatype) -> Result<Value, JsonError> {
+fn json_value_to_value(
+    json_val: &JsonValue,
+    data_type: &ConcreteDatatype,
+) -> Result<Value, JsonError> {
     match (json_val, data_type) {
         // Null values return Value::Null
         (JsonValue::Null, _) => Ok(Value::Null),
-        
+
         // Basic types: String
         (JsonValue::String(s), ConcreteDatatype::String(_)) => Ok(Value::String(s.clone())),
-        
+
         // Basic types: Bool
         (JsonValue::Bool(b), ConcreteDatatype::Bool(_)) => Ok(Value::Bool(*b)),
-        
+
         // Basic types: Int64 (from JSON Number)
-        (JsonValue::Number(n), ConcreteDatatype::Int64(_)) => {
-            n.as_i64()
-                .ok_or_else(|| JsonError::TypeMismatch {
-                    expected: "Int64".to_string(),
-                    actual: format!("{}", n),
-                })
-                .map(Value::Int64)
-        }
-        
+        (JsonValue::Number(n), ConcreteDatatype::Int64(_)) => n
+            .as_i64()
+            .ok_or_else(|| JsonError::TypeMismatch {
+                expected: "Int64".to_string(),
+                actual: format!("{}", n),
+            })
+            .map(Value::Int64),
+
         // Basic types: Float64 (from JSON Number)
-        (JsonValue::Number(n), ConcreteDatatype::Float64(_)) => {
-            n.as_f64()
-                .ok_or_else(|| JsonError::TypeMismatch {
-                    expected: "Float64".to_string(),
-                    actual: format!("{}", n),
-                })
-                .map(Value::Float64)
-        }
-        
+        (JsonValue::Number(n), ConcreteDatatype::Float64(_)) => n
+            .as_f64()
+            .ok_or_else(|| JsonError::TypeMismatch {
+                expected: "Float64".to_string(),
+                actual: format!("{}", n),
+            })
+            .map(Value::Float64),
+
         // Complex types: Struct (from JSON object)
         (JsonValue::Object(obj), ConcreteDatatype::Struct(struct_type)) => {
             let fields = struct_type.fields();
             let mut values = Vec::new();
-            
+
             for field in fields.iter() {
                 let json_val = obj.get(field.name());
                 let value = match json_val {
@@ -175,10 +175,10 @@ fn json_value_to_value(json_val: &JsonValue, data_type: &ConcreteDatatype) -> Re
                 };
                 values.push(value);
             }
-            
+
             Ok(Value::Struct(StructValue::new(values, struct_type.clone())))
         }
-        
+
         // Complex types: List (from JSON array)
         (JsonValue::Array(arr), ConcreteDatatype::List(list_type)) => {
             let item_type = list_type.item_type();
@@ -186,13 +186,13 @@ fn json_value_to_value(json_val: &JsonValue, data_type: &ConcreteDatatype) -> Re
                 .iter()
                 .map(|json_item| json_value_to_value(json_item, item_type))
                 .collect();
-            
+
             Ok(Value::List(ListValue::new(
                 items?,
                 Arc::new(item_type.clone()),
             )))
         }
-        
+
         // Type mismatch
         _ => Err(JsonError::TypeMismatch {
             expected: format!("{:?}", data_type),
@@ -252,16 +252,36 @@ impl std::error::Error for JsonError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datatypes::{ColumnSchema, Int64Type, StringType, Float64Type, BooleanType};
+    use datatypes::{BooleanType, ColumnSchema, Float64Type, Int64Type, StringType};
 
     #[test]
     fn test_new_from_json() {
         let schema = Schema::new(vec![
-            ColumnSchema::new("id".to_string(), "users".to_string(), ConcreteDatatype::Int64(Int64Type)),
-            ColumnSchema::new("name".to_string(), "users".to_string(), ConcreteDatatype::String(StringType)),
-            ColumnSchema::new("age".to_string(), "users".to_string(), ConcreteDatatype::Int64(Int64Type)),
-            ColumnSchema::new("score".to_string(), "users".to_string(), ConcreteDatatype::Float64(Float64Type)),
-            ColumnSchema::new("active".to_string(), "users".to_string(), ConcreteDatatype::Bool(BooleanType)),
+            ColumnSchema::new(
+                "id".to_string(),
+                "users".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+            ColumnSchema::new(
+                "name".to_string(),
+                "users".to_string(),
+                ConcreteDatatype::String(StringType),
+            ),
+            ColumnSchema::new(
+                "age".to_string(),
+                "users".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+            ColumnSchema::new(
+                "score".to_string(),
+                "users".to_string(),
+                ConcreteDatatype::Float64(Float64Type),
+            ),
+            ColumnSchema::new(
+                "active".to_string(),
+                "users".to_string(),
+                ConcreteDatatype::Bool(BooleanType),
+            ),
         ]);
 
         let json = br#"{"id": 1, "name": "Alice", "age": 25, "score": 98.5, "active": true}"#;
@@ -277,7 +297,7 @@ mod tests {
         // Test with missing fields (should use default values)
         let json2 = br#"{"id": 2, "name": "Bob"}"#;
         let tuple2 = Tuple::new_from_json(schema.clone(), json2).unwrap();
-        
+
         assert_eq!(tuple2.get(0), Some(&Value::Int64(2)));
         assert_eq!(tuple2.get(1), Some(&Value::String("Bob".to_string())));
         assert_eq!(tuple2.get(2), Some(&Value::Int64(0))); // default for Int64
@@ -285,9 +305,10 @@ mod tests {
         assert_eq!(tuple2.get(4), Some(&Value::Bool(false))); // default for Bool
 
         // Test with null values (should return Value::Null)
-        let json3 = br#"{"id": 3, "name": null, "age": 30, "score": null, "active": null}"#;
+        let json3 =
+            br#"{"id": 3, "name": null, "age": 30, "score": null, "active": null}"#;
         let tuple3 = Tuple::new_from_json(schema, json3).unwrap();
-        
+
         assert_eq!(tuple3.get(0), Some(&Value::Int64(3)));
         assert_eq!(tuple3.get(1), Some(&Value::Null)); // null for String
         assert_eq!(tuple3.get(2), Some(&Value::Int64(30)));

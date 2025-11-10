@@ -4,8 +4,7 @@
 //! Core flow: directly receive SelectStmt, convert to ScalarExpr, verify calculation results
 
 use flow::{StreamSqlConverter, DataFusionEvaluator, ScalarExpr};
-use flow::tuple::Tuple;
-use flow::row::Row;
+use flow::model::{Row, Tuple};
 use datatypes::{Schema, ColumnSchema, ConcreteDatatype, Int64Type, StringType, Value};
 use parser::parse_sql;
 
