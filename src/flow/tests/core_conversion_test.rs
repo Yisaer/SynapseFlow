@@ -84,7 +84,7 @@ fn test_core_conversion_flow() {
     
     // Calculate first expression: a + b = 5 + 3 = 8
     // Create single-row collection for vectorized evaluation
-    let schema = datatypes::Schema::new(vec![
+    let _schema = datatypes::Schema::new(vec![
         ColumnSchema::new("a".to_string(), "default".to_string(), ConcreteDatatype::Int64(Int64Type)),
         ColumnSchema::new("b".to_string(), "default".to_string(), ConcreteDatatype::Int64(Int64Type)),
     ]);

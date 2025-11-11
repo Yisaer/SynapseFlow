@@ -41,7 +41,7 @@ fn test_struct_field_then_list_index() {
     ));
 
     // Create schema for the tuple
-    let schema = Schema::new(vec![
+    let _schema = Schema::new(vec![
         ColumnSchema::new("struct_col".to_string(), "test_table".to_string(), ConcreteDatatype::Struct(struct_type.clone())),
     ]);
 
@@ -118,7 +118,7 @@ fn test_list_index_then_struct_field() {
     ));
 
     // Create schema for the tuple
-    let schema = Schema::new(vec![
+    let _schema = Schema::new(vec![
         ColumnSchema::new("list_col".to_string(), "test_table".to_string(), ConcreteDatatype::List(list_type.clone())),
     ]);
 
@@ -202,7 +202,7 @@ fn test_complex_nested_access() {
     ));
 
     // Create schema for the tuple
-    let schema = Schema::new(vec![
+    let _schema = Schema::new(vec![
         ColumnSchema::new("complex_col".to_string(), "test_table".to_string(), ConcreteDatatype::Struct(outer_struct_type.clone())),
     ]);
 
@@ -267,7 +267,7 @@ fn test_list_of_lists() {
     ));
 
     // Create schema for the tuple
-    let schema = Schema::new(vec![
+    let _schema = Schema::new(vec![
         ColumnSchema::new("list_of_lists".to_string(), "test_table".to_string(), ConcreteDatatype::List(outer_list_type.clone())),
     ]);
 

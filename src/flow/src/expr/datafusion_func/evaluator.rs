@@ -123,13 +123,8 @@ impl DataFusionEvaluator {
                             values.push(self.array_element_to_value(&array, i)?);
                         }
                         
-                        // Determine the datatype from the first element, or use a default
-                        let datatype = if let Some(first_value) = values.first() {
-                            Arc::new(Self::concrete_datatype_from_value(first_value))
-                        } else {
-                            // For empty arrays, we could try to infer from Arrow type, but for now use Int64 as default
-                            Arc::new(ConcreteDatatype::Int64(::datatypes::Int64Type))
-                        };
+                        // Determine the datatype from the Arrow array type
+                        let datatype = Arc::new(arrow_type_to_concrete_datatype(array.data_type())?);
                         
                         Ok(Value::List(ListValue::new(values, datatype)))
                     }
@@ -137,36 +132,6 @@ impl DataFusionEvaluator {
             }
             ColumnarValue::Scalar(scalar) => {
                 scalar_value_to_value(&scalar)
-            }
-        }
-    }
-    
-    /// Infer ConcreteDatatype from a Value
-    fn concrete_datatype_from_value(value: &Value) -> ConcreteDatatype {
-        match value {
-            Value::Int8(_) => ConcreteDatatype::Int8(::datatypes::Int8Type),
-            Value::Int16(_) => ConcreteDatatype::Int16(::datatypes::Int16Type),
-            Value::Int32(_) => ConcreteDatatype::Int32(::datatypes::Int32Type),
-            Value::Int64(_) => ConcreteDatatype::Int64(::datatypes::Int64Type),
-            Value::Uint8(_) => ConcreteDatatype::Uint8(::datatypes::Uint8Type),
-            Value::Uint16(_) => ConcreteDatatype::Uint16(::datatypes::Uint16Type),
-            Value::Uint32(_) => ConcreteDatatype::Uint32(::datatypes::Uint32Type),
-            Value::Uint64(_) => ConcreteDatatype::Uint64(::datatypes::Uint64Type),
-            Value::Float32(_) => ConcreteDatatype::Float32(::datatypes::Float32Type),
-            Value::Float64(_) => ConcreteDatatype::Float64(::datatypes::Float64Type),
-            Value::String(_) => ConcreteDatatype::String(::datatypes::StringType),
-            Value::Bool(_) => ConcreteDatatype::Bool(::datatypes::BooleanType),
-            Value::Null => {
-                // For null values, default to Int64
-                ConcreteDatatype::Int64(::datatypes::Int64Type)
-            }
-            Value::Struct(_) => {
-                // For struct, we would need more context, default to empty struct
-                ConcreteDatatype::Struct(::datatypes::StructType::new(Arc::new(vec![])))
-            }
-            Value::List(list_val) => {
-                // For list, use the existing datatype
-                list_val.datatype().clone()
             }
         }
     }
@@ -439,5 +404,26 @@ fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFusion
                 function_name
             )))
         }
+    }
+}
+
+/// Convert Arrow DataType to ConcreteDatatype
+fn arrow_type_to_concrete_datatype(arrow_type: &arrow::datatypes::DataType) -> DataFusionResult<ConcreteDatatype> {
+    match arrow_type {
+        arrow::datatypes::DataType::Int8 => Ok(ConcreteDatatype::Int8(::datatypes::Int8Type)),
+        arrow::datatypes::DataType::Int16 => Ok(ConcreteDatatype::Int16(::datatypes::Int16Type)),
+        arrow::datatypes::DataType::Int32 => Ok(ConcreteDatatype::Int32(::datatypes::Int32Type)),
+        arrow::datatypes::DataType::Int64 => Ok(ConcreteDatatype::Int64(::datatypes::Int64Type)),
+        arrow::datatypes::DataType::UInt8 => Ok(ConcreteDatatype::Uint8(::datatypes::Uint8Type)),
+        arrow::datatypes::DataType::UInt16 => Ok(ConcreteDatatype::Uint16(::datatypes::Uint16Type)),
+        arrow::datatypes::DataType::UInt32 => Ok(ConcreteDatatype::Uint32(::datatypes::Uint32Type)),
+        arrow::datatypes::DataType::UInt64 => Ok(ConcreteDatatype::Uint64(::datatypes::Uint64Type)),
+        arrow::datatypes::DataType::Float32 => Ok(ConcreteDatatype::Float32(::datatypes::Float32Type)),
+        arrow::datatypes::DataType::Float64 => Ok(ConcreteDatatype::Float64(::datatypes::Float64Type)),
+        arrow::datatypes::DataType::Utf8 => Ok(ConcreteDatatype::String(::datatypes::StringType)),
+        arrow::datatypes::DataType::Boolean => Ok(ConcreteDatatype::Bool(::datatypes::BooleanType)),
+        _ => Err(DataFusionError::NotImplemented(
+            format!("Arrow type {:?} conversion to ConcreteDatatype not implemented", arrow_type)
+        )),
     }
 }
