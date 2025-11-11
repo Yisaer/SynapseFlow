@@ -171,9 +171,26 @@ impl ScalarExpr {
                     })
                     .collect()
             }
-            ScalarExpr::CallDf { function_name: _, args: _ } => {
+            ScalarExpr::CallDf { function_name, args } => {
+                // Vectorized DataFusion function evaluation
+                // Prepare arguments as vectors (one vector per argument, containing all rows)
+                let mut arg_vectors = Vec::new();
+                for arg_expr in args {
+                    arg_vectors.push(arg_expr.eval_vectorized(evaluator, collection)?);
+                }
+                
+                // Validate vector dimensions
+                let num_rows = collection.num_rows();
+                for (i, arg_vec) in arg_vectors.iter().enumerate() {
+                    if arg_vec.len() != num_rows {
+                        return Err(EvalError::NotImplemented { 
+                            feature: format!("Argument {} has {} values, expected {}", i, arg_vec.len(), num_rows)
+                        });
+                    }
+                }
+                
                 // Use DataFusion's native vectorized evaluation
-                evaluator.evaluate_expr_vectorized(self, collection)
+                evaluator.evaluate_df_function_vectorized(function_name, &arg_vectors, collection)
                     .map_err(|df_error| EvalError::DataFusionError { 
                         message: df_error.to_string() 
                     })
