@@ -4,7 +4,7 @@
 //! Core flow: directly receive SelectStmt, convert to ScalarExpr, verify calculation results
 
 use flow::{StreamSqlConverter, DataFusionEvaluator, ScalarExpr};
-use flow::model::{Tuple, RecordBatch, Column};
+use flow::model::{RecordBatch, Column};
 use datatypes::{Value, ConcreteDatatype, Int64Type, ColumnSchema};
 use parser::parse_sql;
 use std::collections::HashMap;
@@ -81,7 +81,6 @@ fn test_core_conversion_flow() {
     let mut data = HashMap::new();
     data.insert(("default".to_string(), "a".to_string()), Value::Int64(5));  // a = 5
     data.insert(("default".to_string(), "b".to_string()), Value::Int64(3));  // b = 3
-    let _tuple = Tuple::new(data);
     
     // Calculate first expression: a + b = 5 + 3 = 8
     // Create single-row collection for vectorized evaluation
@@ -89,9 +88,9 @@ fn test_core_conversion_flow() {
         ColumnSchema::new("a".to_string(), "default".to_string(), ConcreteDatatype::Int64(Int64Type)),
         ColumnSchema::new("b".to_string(), "default".to_string(), ConcreteDatatype::Int64(Int64Type)),
     ]);
-    let collection = RecordBatch::new(schema, vec![
-        Column::new("a".to_string(), ConcreteDatatype::Int64(Int64Type), vec![Value::Int64(5)]),
-        Column::new("b".to_string(), ConcreteDatatype::Int64(Int64Type), vec![Value::Int64(3)]),
+    let collection = RecordBatch::new( vec![
+        Column::new("a".to_string(), "default".to_string(), vec![Value::Int64(5)]),
+        Column::new("b".to_string(), "default".to_string(), vec![Value::Int64(3)]),
     ]).unwrap();
     
     let results1 = expressions[0].eval_with_collection(&evaluator, &collection).expect("Calculation should succeed");

@@ -35,11 +35,10 @@ fn test_field_access_simple() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "struct_col".to_string(),
-        ConcreteDatatype::Struct(struct_type),
+        "struct_col".to_string(), "test_table".to_string(),
         vec![struct_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create field access expression: test_table.struct_col.x
     let column_expr = ScalarExpr::column("test_table", "struct_col");
@@ -85,11 +84,10 @@ fn test_field_access_string_field() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "struct_col".to_string(),
-        ConcreteDatatype::Struct(struct_type),
+        "struct_col".to_string(), "test_table".to_string(),
         vec![struct_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create field access expression: test_table.struct_col.y
     let column_expr = ScalarExpr::column("test_table", "struct_col");
@@ -147,11 +145,10 @@ fn test_field_access_nested() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "outer_struct".to_string(),
-        ConcreteDatatype::Struct(outer_struct_type.clone()),
+        "outer_struct".to_string(), "test_table".to_string(),
         vec![outer_struct_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create nested field access expression: test_table.outer_struct.inner.a
     let column_expr = ScalarExpr::column("test_table", "outer_struct");
@@ -194,11 +191,10 @@ fn test_field_access_field_not_found() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "struct_col".to_string(),
-        ConcreteDatatype::Struct(struct_type),
+        "struct_col".to_string(), "test_table".to_string(),
         vec![struct_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create field access expression for non-existent field: test_table.struct_col.y
     let column_expr = ScalarExpr::column("test_table", "struct_col");
@@ -229,11 +225,10 @@ fn test_field_access_not_struct() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "int_col".to_string(),
-        ConcreteDatatype::Int32(Int32Type),
+        "int_col".to_string(), "test_table".to_string(),
         vec![Value::Int32(42)]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create field access expression on non-struct value: test_table.int_col.x
     let column_expr = ScalarExpr::column("test_table", "int_col");

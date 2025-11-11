@@ -47,11 +47,10 @@ fn test_struct_field_then_list_index() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "struct_col".to_string(),
-        ConcreteDatatype::Struct(struct_type),
+        "struct_col".to_string(), "test_table".to_string(),
         vec![struct_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create combined access expression: column(0).numbers[1]
     let column_expr = ScalarExpr::column("test_table", "struct_col");
@@ -125,11 +124,10 @@ fn test_list_index_then_struct_field() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "list_col".to_string(),
-        ConcreteDatatype::List(list_type.clone()),
+        "list_col".to_string(), "test_table".to_string(),
         vec![list_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create combined access expression: column(0)[1].y
     let column_expr = ScalarExpr::column("test_table", "list_col");
@@ -210,11 +208,10 @@ fn test_complex_nested_access() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "complex_col".to_string(),
-        ConcreteDatatype::Struct(outer_struct_type),
+        "complex_col".to_string(), "test_table".to_string(),
         vec![outer_struct_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create complex access expression: column(0).data[2].value
     let column_expr = ScalarExpr::column("test_table", "complex_col");
@@ -276,11 +273,10 @@ fn test_list_of_lists() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "list_of_lists".to_string(),
-        ConcreteDatatype::List(outer_list_type.clone()),
+        "list_of_lists".to_string(), "test_table".to_string(),
         vec![outer_list_value]
     );
-    let collection = RecordBatch::new(schema, vec![column]).unwrap();
+    let collection = RecordBatch::new( vec![column]).unwrap();
 
     // Create nested list index expression: column(0)[1][2]
     let column_expr = ScalarExpr::column("test_table", "list_of_lists");

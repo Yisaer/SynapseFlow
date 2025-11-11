@@ -1,39 +1,22 @@
 use std::any::Any;
-use datatypes::{Schema, Value};
-
-/// Type alias for filter predicate function
-pub type FilterPredicate = Box<dyn Fn(&dyn crate::model::Row) -> bool + Send + Sync>;
+use datatypes::Value;
 
 /// Collection trait defines the interface for multi-row data structures
 /// 
 /// This trait provides methods to access and manipulate collections of data,
 /// supporting both row-based and column-based access patterns.
 pub trait Collection: Send + Sync + Any {
-    /// Get the schema of this collection
-    fn schema(&self) -> &Schema;
-    
     /// Get the number of rows in this collection
     fn num_rows(&self) -> usize;
     
     /// Get the number of columns in this collection
-    fn num_columns(&self) -> usize {
-        self.schema().column_schemas().len()
-    }
+    fn num_columns(&self) -> usize;
     
     /// Get a column by index
     fn column(&self, index: usize) -> Option<&Column>;
     
-    /// Get a column by name
-    fn column_by_name(&self, name: &str) -> Option<&Column> {
-        self.schema()
-            .column_schemas()
-            .iter()
-            .position(|col_schema| col_schema.name == name)
-            .and_then(|index| self.column(index))
-    }
-    
-    /// Get a row by index (row-based access)
-    fn row(&self, index: usize) -> Option<Box<dyn crate::model::Row>>;
+    /// Get a column by source name and column name
+    fn column_by_name(&self, source_name: &str, name: &str) -> Option<&Column>;
     
     /// Check if the collection is empty
     fn is_empty(&self) -> bool {
@@ -45,9 +28,6 @@ pub trait Collection: Send + Sync + Any {
     
     /// Take a selection of rows by indices
     fn take(&self, indices: &[usize]) -> Result<Box<dyn Collection>, CollectionError>;
-    
-    /// Filter rows based on a predicate function (boxed version for dyn compatibility)
-    fn filter_boxed(&self, predicate: FilterPredicate) -> Result<Box<dyn Collection>, CollectionError>; 
     
     /// Get all columns as a slice
     fn columns(&self) -> &[Column];
@@ -61,16 +41,16 @@ pub trait Collection: Send + Sync + Any {
 pub struct Column {
     /// Column name
     pub name: String,
-    /// Column data type
-    pub data_type: datatypes::ConcreteDatatype,
+    /// Source table name (which table this column belongs to)
+    pub source_name: String,
     /// Column values
     pub data: Vec<Value>,
 }
 
 impl Column {
     /// Create a new column
-    pub fn new(name: String, data_type: datatypes::ConcreteDatatype, data: Vec<Value>) -> Self {
-        Self { name, data_type, data }
+    pub fn new(name: String, source_name: String, data: Vec<Value>) -> Self {
+        Self { name, source_name, data }
     }
     
     /// Get the number of elements in this column
@@ -93,9 +73,14 @@ impl Column {
         &self.data
     }
     
-    /// Get the data type
-    pub fn data_type(&self) -> &datatypes::ConcreteDatatype {
-        &self.data_type
+    /// Get the data type (inferred from the first value)
+    pub fn data_type(&self) -> Option<datatypes::ConcreteDatatype> {
+        self.data.first().map(|v| v.datatype())
+    }
+    
+    /// Get the source table name
+    pub fn source_name(&self) -> &str {
+        &self.source_name
     }
     
     /// Get the column name

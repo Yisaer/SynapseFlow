@@ -2,7 +2,6 @@ use datatypes::{ConcreteDatatype, Value};
 
 use crate::expr::func::{BinaryFunc, EvalError, UnaryFunc};
 use crate::expr::datafusion_func::DataFusionEvaluator;
-use crate::model::row::Row;
 use crate::model::Collection;
 use std::sync::Arc;
 use crate::expr::custom_func::CustomFunc;
@@ -81,7 +80,7 @@ impl ScalarExpr {
         match self {
             ScalarExpr::Column { source_name, column_name } => {
                 // Direct column access - most efficient case
-                collection.column_by_name(column_name)
+                collection.column_by_name(source_name, column_name)
                     .map(|col| col.values().to_vec())
                     .ok_or_else(|| EvalError::ColumnNotFound {
                         source: source_name.clone(),
@@ -201,41 +200,6 @@ impl ScalarExpr {
                 func.validate_vectorized(&arg_vectors)?;
                 func.eval_vectorized(&arg_vectors)
             }
-        }
-    }
-
-    /// Internal helper: evaluate a single row using vectorized evaluation
-    /// This is used for internal recursive evaluation when we need to process a single row
-    #[allow(dead_code)]
-    fn eval_single_row(&self, evaluator: &DataFusionEvaluator, _row: &dyn Row) -> Result<Value, EvalError> {
-        // For single row evaluation, we'll create a minimal schema based on what we can extract from the row
-        // This is a simplified approach - in practice you'd want more sophisticated schema inference
-        let _columns: Vec<crate::model::Column> = Vec::new();
-        let _schema_columns: Vec<datatypes::ColumnSchema> = Vec::new();
-        
-        // Try to extract some common field names and create a minimal schema
-        // For now, we'll just create a dummy schema since we don't have schema info from Row
-        let dummy_schema = datatypes::Schema::new(vec![]);
-        
-        // Since we can't get schema from Row, we'll use a different approach
-        // Create a minimal single-row collection and evaluate
-        let single_row_collection = crate::model::record_batch::RecordBatch::new(dummy_schema, vec![])
-            .map_err(|e| EvalError::NotImplemented { feature: format!("Failed to create collection: {}", e) })?;
-        
-        // Use vectorized evaluation - this will work for expressions that don't depend on specific column data
-        let results = self.eval_vectorized(evaluator, &single_row_collection)?;
-        
-        // For expressions that need actual data, we need a different approach
-        // This is a limitation of the current design - we need schema information
-        if results.is_empty() {
-            // Fallback: try to evaluate simple expressions directly
-            match self {
-                ScalarExpr::Literal(val, _) => Ok(val.clone()),
-                _ => Err(EvalError::NotImplemented { feature: "Single row evaluation requires schema information".to_string() })
-            }
-        } else {
-            results.into_iter().next()
-                .ok_or_else(|| EvalError::NotImplemented { feature: "No result from single row evaluation".to_string() })
         }
     }
 
