@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::sync::Arc;
 use crate::planner::logical::{LogicalPlan, BaseLogicalPlan};
 use sqlparser::ast::Expr;
@@ -26,5 +27,9 @@ impl LogicalPlan for Filter {
 
     fn get_plan_index(&self) -> &i64 {
         &self.base.index
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::sync::Arc;
 use crate::planner::logical::{LogicalPlan, BaseLogicalPlan};
 use crate::expr::ScalarExpr;
@@ -32,5 +33,9 @@ impl LogicalPlan for Project {
 
     fn get_plan_index(&self) -> &i64 {
         &self.base.index
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
