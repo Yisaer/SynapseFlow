@@ -3,8 +3,9 @@
 //! This processor acts as a source of data in the stream processing pipeline.
 //! Currently generates empty data to establish the data flow pipeline.
 //! 
-//! Design follows rstream's Executor pattern with tokio::spawn and dedicated data generation routine.
-//! Now uses StreamData::Control signals for shutdown, eliminating separate stop channels.
+//! Redesigned with single input channel architecture:
+//! - Single input channel (can receive control signals)
+//! - Multiple output channels for broadcasting to downstream
 
 use tokio::sync::broadcast;
 use std::sync::Arc;
@@ -14,45 +15,233 @@ use crate::processor::{StreamProcessor, ProcessorView, ProcessorHandle, utils, S
 /// DataSource processor that corresponds to PhysicalDataSource
 /// 
 /// This is typically the starting point of a stream processing pipeline.
-/// Currently just generates empty data to establish data flow.
+/// Now designed with single input, multiple output architecture.
 pub struct DataSourceProcessor {
-    /// The physical plan this processor corresponds to (kept for compatibility but not used in processing)
+    /// The physical plan this processor corresponds to
     physical_plan: Arc<dyn PhysicalPlan>,
-    /// Input channels from children (upstream processors)
-    /// For DataSource, this is typically empty, but we support it for flexibility
-    input_receivers: Vec<broadcast::Receiver<StreamData>>,
+    /// Input channel - can receive control signals from upstream or external sources
+    input_channel: (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>),
+    /// Output channels - broadcast processed data to downstream processors
+    output_channels: Vec<(broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>)>,
     /// Number of downstream processors this will broadcast to
     downstream_count: usize,
 }
 
 impl DataSourceProcessor {
-    /// Create a new DataSourceProcessor with specified downstream count and upstream receivers
+    /// Create a new DataSourceProcessor with specified downstream count
     pub fn new(
         physical_plan: Arc<dyn PhysicalPlan>,
-        input_receivers: Vec<broadcast::Receiver<StreamData>>,
         downstream_count: usize,
     ) -> Self {
+        // Create input channel (mainly for control signals)
+        let input_channel = utils::create_channel(1);
+        
+        // Create output channels for broadcasting to downstream
+        let output_channels = utils::create_output_channels(downstream_count);
+        
         Self {
             physical_plan,
-            input_receivers,
+            input_channel,
+            output_channels,
             downstream_count,
+        }
+    }
+    
+    /// Generate initial data (currently empty for pipeline establishment)
+    fn generate_data(&self) -> Vec<Box<dyn crate::model::Collection>> {
+        // For now, return empty data to establish pipeline
+        // In a real implementation, this would:
+        // 1. Connect to the actual data source (Kafka, file, etc.)
+        // 2. Read and parse data
+        // 3. Return data items
+        vec![]
+    }
+    
+    /// Create data source routine that runs in tokio task
+    /// Now with single input, multiple output architecture
+    pub fn create_datasource_routine(
+        self: Arc<Self>,
+        mut input_receiver: broadcast::Receiver<StreamData>,
+        output_senders: Vec<broadcast::Sender<StreamData>>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let processor_name = "DataSourceProcessor".to_string();
+        let downstream_count = self.downstream_count;
+        
+        // Clone data generation method
+        let data_generator = self.clone();
+        
+        async move {
+            println!("{}: Starting data source routine for {} downstream processors", 
+                     processor_name, downstream_count);
+            
+            // Send initial stream start signal to all outputs
+            let start_signal = StreamData::stream_start();
+            for sender in &output_senders {
+                if sender.send(start_signal.clone()).is_err() {
+                    println!("{}: Failed to send start signal to some outputs", processor_name);
+                }
+            }
+            
+            // Main processing loop
+            loop {
+                // Listen for control signals on input channel
+                match input_receiver.recv().await {
+                    Ok(stream_data) => {
+                        println!("{}: Received input: {:?}", processor_name, stream_data.description());
+                        
+                        // Check for stop signal
+                        if utils::is_stop_signal(&stream_data) {
+                            println!("{}: Received stop signal, shutting down gracefully", processor_name);
+                            // Forward stop signal to all outputs
+                            for sender in &output_senders {
+                                let _ = sender.send(stream_data.clone());
+                            }
+                            break;
+                        }
+                        
+                        // Forward control signals to all outputs
+                        if stream_data.is_control() {
+                            for sender in &output_senders {
+                                if sender.send(stream_data.clone()).is_err() {
+                                    println!("{}: Failed to forward control signal to some outputs", processor_name);
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        // For data signals, generate actual data (currently empty)
+                        if stream_data.is_data() {
+                            // In a real implementation, this would generate data based on the signal
+                            let data_items = data_generator.generate_data();
+                            
+                            for data in data_items {
+                                let data_signal = StreamData::collection(data);
+                                // Broadcast to all outputs
+                                for sender in &output_senders {
+                                    if sender.send(data_signal.clone()).is_err() {
+                                        println!("{}: Failed to send data to some outputs", processor_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}: Input channel error: {}", processor_name, e);
+                        // Send error to all outputs
+                        let error_data = utils::handle_receive_error(e);
+                        for sender in &output_senders {
+                            let _ = sender.send(error_data.clone());
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // Send final stream end signal to all outputs
+            let end_signal = StreamData::stream_end();
+            for sender in &output_senders {
+                let _ = sender.send(end_signal.clone());
+            }
+            
+            println!("{}: Data source routine completed", processor_name);
         }
     }
 }
 
 impl StreamProcessor for DataSourceProcessor {
-    fn start(&self) -> ProcessorView {
-        // Create only result channel - no stop channel needed
-        let (result_tx, result_rx) = utils::create_result_channel(self.downstream_count);
+    fn start(&self, input_receiver: broadcast::Receiver<StreamData>) -> ProcessorView {
+        // Create output channels for broadcasting to downstream
+        let output_senders: Vec<broadcast::Sender<StreamData>> = utils::create_output_senders(self.downstream_count);
+        
+        // Clone data that will be used in the async task
+        let processor_name = "DataSourceProcessor".to_string();
+        let downstream_count = self.downstream_count;
+        let output_senders_clone = output_senders.clone();
+        
+        // Clone for the routine (Receiver supports resubscribe)
+        let mut routine_input_receiver = input_receiver.resubscribe();
         
         // Spawn the data source routine
-        let routine = self.create_datasource_routine(result_tx);
+        let routine = async move {
+            println!("{}: Starting data source routine for {} downstream processors", 
+                     processor_name, downstream_count);
+            
+            // Send initial stream start signal to all outputs
+            let start_signal = StreamData::stream_start();
+            for sender in &output_senders_clone {
+                if sender.send(start_signal.clone()).is_err() {
+                    println!("{}: Failed to send start signal to some outputs", processor_name);
+                }
+            }
+            
+            // Main processing loop
+            loop {
+                // Listen for control signals on input channel
+                match routine_input_receiver.recv().await {
+                    Ok(stream_data) => {
+                        println!("{}: Received input: {:?}", processor_name, stream_data.description());
+                        
+                        // Check for stop signal
+                        if utils::is_stop_signal(&stream_data) {
+                            println!("{}: Received stop signal, shutting down gracefully", processor_name);
+                            // Forward stop signal to all outputs
+                            for sender in &output_senders_clone {
+                                let _ = sender.send(stream_data.clone());
+                            }
+                            break;
+                        }
+                        
+                        // Forward control signals to all outputs
+                        if stream_data.is_control() {
+                            for sender in &output_senders_clone {
+                                if sender.send(stream_data.clone()).is_err() {
+                                    println!("{}: Failed to forward control signal to some outputs", processor_name);
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        // For data signals, generate actual data (currently empty)
+                        if stream_data.is_data() {
+                            // In a real implementation, this would generate data based on the signal
+                            // For now, just forward the data signal as-is since we don't have real data generation
+                            for sender in &output_senders_clone {
+                                if sender.send(stream_data.clone()).is_err() {
+                                    println!("{}: Failed to forward data to some outputs", processor_name);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}: Input channel error: {}", processor_name, e);
+                        // Send error to all outputs
+                        let error_data = utils::handle_receive_error(e);
+                        for sender in &output_senders_clone {
+                            let _ = sender.send(error_data.clone());
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // Send final stream end signal to all outputs
+            let end_signal = StreamData::stream_end();
+            for sender in &output_senders_clone {
+                let _ = sender.send(end_signal.clone());
+            }
+            
+            println!("{}: Data source routine completed", processor_name);
+        };
         
         let join_handle = tokio::spawn(routine);
         
-        // For DataSource, we don't need control sender - it's a source
-        ProcessorView::from_result_receiver(
-            result_rx,
+        // For DataSourceProcessor, we create input sender for control signals
+        let (input_sender, _) = utils::create_input_channel();
+        
+        ProcessorView::new(
+            Some(input_sender),
+            input_receiver,
+            output_senders,
             ProcessorHandle::new(join_handle),
         )
     }
@@ -61,106 +250,7 @@ impl StreamProcessor for DataSourceProcessor {
         self.downstream_count
     }
     
-    fn input_receivers(&self) -> Vec<broadcast::Receiver<StreamData>> {
-        self.input_receivers.iter()
-            .map(|rx| rx.resubscribe())
-            .collect()
-    }
-}
-
-// Private helper methods
-impl DataSourceProcessor {
-    /// Create data source routine that runs in tokio task
-    /// Uses StreamData::Control signals for shutdown instead of separate stop channel
-    fn create_datasource_routine(
-        &self,
-        result_tx: broadcast::Sender<StreamData>,
-    ) -> impl std::future::Future<Output = ()> + Send + 'static {
-        let downstream_count = self.downstream_count;
-        let mut input_receivers = self.input_receivers();
-        
-        async move {
-            println!("DataSourceProcessor: Starting data source routine for {} downstream processors with {} upstream inputs", 
-                     downstream_count, input_receivers.len());
-            
-            // Send stream start signal
-            if result_tx.send(StreamData::stream_start()).is_err() {
-                println!("DataSourceProcessor: Failed to send start signal");
-                return;
-            }
-            
-            // If we have upstream inputs, process them (for future extensions)
-            // For now, DataSource typically doesn't have upstream, but we support it
-            if !input_receivers.is_empty() {
-                println!("DataSourceProcessor: Processing upstream inputs (unexpected for data source)");
-                // Process upstream data - this is unusual for a data source but supports flexibility
-                for receiver in &mut input_receivers {
-                    loop {
-                        tokio::select! {
-                            result = receiver.recv() => {
-                                match result {
-                                    Ok(stream_data) => {
-                                        // Check for stop signal in the data stream
-                                        if utils::is_stop_signal(&stream_data) {
-                                            println!("DataSourceProcessor: Received stop signal in upstream data, shutting down");
-                                            break;
-                                        }
-                                        
-                                        // Pass through upstream data (unusual for data source)
-                                        if result_tx.send(stream_data).is_err() {
-                                            println!("DataSourceProcessor: All downstream receivers dropped");
-                                            return;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // Handle broadcast errors from upstream
-                                        let error_data = utils::handle_receive_error(e);
-                                        if result_tx.send(error_data).is_err() {
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Traditional data source behavior - generate data
-                // For now, return empty data to establish pipeline
-                // In a real implementation, this would generate actual data
-                let data_items: Vec<Box<dyn crate::model::Collection>> = vec![];
-                
-                for data in data_items {
-                    // Check for stop signal before sending each item
-                    // Use a timeout to periodically check for control signals
-                    match tokio::time::timeout(tokio::time::Duration::from_millis(10), async {
-                        // Try to receive any pending control signals
-                        let mut temp_rx = result_tx.subscribe();
-                        temp_rx.recv().await
-                    }).await {
-                        Ok(Ok(stop_signal)) if utils::is_stop_signal(&stop_signal) => {
-                            println!("DataSourceProcessor: Received stop signal, shutting down");
-                            break;
-                        }
-                        _ => {
-                            // No stop signal, continue with normal processing
-                        }
-                    }
-                    
-                    if result_tx.send(StreamData::collection(data)).is_err() {
-                        // All downstream receivers dropped, stop processing
-                        println!("DataSourceProcessor: All downstream receivers dropped, stopping");
-                        break;
-                    }
-                }
-            }
-            
-            // Send stream end signal
-            if result_tx.send(StreamData::stream_end()).is_err() {
-                println!("DataSourceProcessor: Failed to send end signal");
-            }
-            
-            println!("DataSourceProcessor: Data source routine completed");
-        }
+    fn create_input_channel(&self) -> (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>) {
+        utils::create_input_channel()
     }
 }

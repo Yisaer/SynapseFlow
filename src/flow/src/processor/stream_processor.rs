@@ -2,8 +2,10 @@
 //! 
 //! Defines the core StreamProcessor interface and shared utilities for all processors.
 //! 
-//! Redesigned to use StreamData::Control signals for all control operations,
-//! eliminating the need for separate stop channels.
+//! Redesigned with single input channel architecture:
+//! - Each processor has exactly ONE input channel
+//! - Each processor can have MULTIPLE output channels
+//! - Simplifies processor logic and improves performance
 
 use tokio::sync::broadcast;
 use crate::processor::stream_data::{StreamData, ControlSignal, StreamError};
@@ -11,36 +13,30 @@ use crate::processor::ProcessorView;
 
 /// Core trait for all stream processors
 /// 
-/// Processors run in their own tokio task and handle data flow through broadcast channels.
-/// They can receive data from multiple upstream sources and broadcast to multiple downstream sinks.
-/// 
-/// Design pattern:
-/// 1. Constructor takes configuration and input receivers
-/// 2. `start()` method spawns tokio task and returns ProcessorView
-/// 3. Each processor implements data processing routine with tokio::select!
-/// 4. Supports graceful shutdown via StreamData::Control signals
-/// 5. Handles multiple input sources and output broadcasting
-/// 
-/// Note: This trait is designed to work with both PhysicalPlan-based processors
-/// and special-purpose processors like ControlSourceProcessor and ResultSinkProcessor
+/// New architecture:
+/// 1. Each processor has exactly ONE input channel
+/// 2. Processors broadcast results to multiple output channels
+/// 3. Control signals flow through the same channel as data
+/// 4. Simplified processor logic without complex select!
 pub trait StreamProcessor: Send + Sync {
     /// Start the processor and return a view for control and output
     /// 
-    /// This method should:
-    /// 1. Create necessary channels (result channel only, no stop channel)
-    /// 2. Spawn a tokio task for the processor routine
-    /// 3. Return a ProcessorView for external control and data consumption
+    /// The processor will:
+    /// 1. Receive data from its single input channel
+    /// 2. Process the data according to its logic
+    /// 3. Broadcast results to multiple output channels
+    /// 4. Handle control signals for graceful shutdown
     /// 
-    /// Processors should listen for StreamData::Control(ControlSignal::StreamEnd) 
-    /// in their main processing loop to handle graceful shutdown.
-    fn start(&self) -> ProcessorView;
+    /// # Arguments
+    /// * `input_receiver` - The input channel receiver that this processor will listen to
+    fn start(&self, input_receiver: broadcast::Receiver<StreamData>) -> ProcessorView;
     
     /// Get the number of downstream processors this will broadcast to
-    /// This is determined at construction time and used for channel capacity planning
+    /// Used for channel capacity planning
     fn downstream_count(&self) -> usize;
     
-    /// Get input channels from upstream processors
-    fn input_receivers(&self) -> Vec<broadcast::Receiver<StreamData>>;
+    /// Create an input channel for this processor (for control signals)
+    fn create_input_channel(&self) -> (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>);
 }
 
 /// Common utilities for stream processors
@@ -48,13 +44,38 @@ pub mod utils {
     use super::*;
     
     /// Create a broadcast channel with appropriate capacity based on downstream count
-    pub fn create_result_channel(downstream_count: usize) -> (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>) {
+    pub fn create_channel(downstream_count: usize) -> (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>) {
         // Base capacity + additional capacity per downstream
         let base_capacity = 1024;
         let additional_capacity = downstream_count * 256;
         let total_capacity = base_capacity + additional_capacity;
         
         broadcast::channel(total_capacity)
+    }
+    
+    /// Create an input channel for a processor
+    /// 
+    /// This is the channel that the processor will listen to for incoming data
+    pub fn create_input_channel() -> (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>) {
+        // Use a reasonable base capacity for input channels
+        broadcast::channel(1024)
+    }
+    
+    /// Create output channels for broadcasting to downstream processors
+    /// 
+    /// Returns only the senders (receivers are created but not returned)
+    pub fn create_output_senders(count: usize) -> Vec<broadcast::Sender<StreamData>> {
+        (0..count).map(|i| {
+            let (sender, _) = create_channel(count);
+            sender
+        }).collect()
+    }
+    
+    /// Create output channels for a processor (both senders and receivers)
+    /// 
+    /// Returns tuples of (sender, receiver) for each output channel
+    pub fn create_output_channels(count: usize) -> Vec<(broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>)> {
+        (0..count).map(|_| create_channel(count)).collect()
     }
     
     /// Handle broadcast receive errors by converting them to appropriate StreamData

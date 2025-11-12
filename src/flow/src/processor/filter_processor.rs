@@ -3,8 +3,9 @@
 //! This processor filters incoming data based on a predicate expression.
 //! Currently just passes data through for pipeline establishment.
 //! 
-//! Design follows rstream's Executor pattern with tokio::spawn and dedicated filtering routine.
-//! Now uses StreamData::Control signals for shutdown, eliminating separate stop channels.
+//! Redesigned with single input channel architecture:
+//! - Single input channel for receiving data from upstream
+//! - Multiple output channels for broadcasting filtered results
 
 use tokio::sync::broadcast;
 use std::sync::Arc;
@@ -14,12 +15,14 @@ use crate::processor::{StreamProcessor, ProcessorView, ProcessorHandle, utils, S
 /// Filter processor that corresponds to PhysicalFilter
 /// 
 /// This processor filters incoming data based on a predicate expression.
-/// Currently just passes data through for pipeline establishment.
+/// Now designed with single input, multiple output architecture.
 pub struct FilterProcessor {
     /// The physical plan this processor corresponds to
     physical_plan: Arc<dyn PhysicalPlan>,
-    /// Input channels from upstream processors
-    input_receivers: Vec<broadcast::Receiver<StreamData>>,
+    /// Input channel - receives data from upstream
+    input_channel: (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>),
+    /// Output channels - broadcast filtered results to downstream
+    output_channels: Vec<(broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>)>,
     /// Number of downstream processors this will broadcast to
     downstream_count: usize,
 }
@@ -28,12 +31,18 @@ impl FilterProcessor {
     /// Create a new FilterProcessor
     pub fn new(
         physical_plan: Arc<dyn PhysicalPlan>,
-        input_receivers: Vec<broadcast::Receiver<StreamData>>,
         downstream_count: usize,
     ) -> Self {
+        // Create input channel
+        let input_channel = utils::create_channel(1);
+        
+        // Create output channels for broadcasting to downstream
+        let output_channels = utils::create_output_channels(downstream_count);
+        
         Self {
             physical_plan,
-            input_receivers,
+            input_channel,
+            output_channels,
             downstream_count,
         }
     }
@@ -47,18 +56,83 @@ impl FilterProcessor {
 }
 
 impl StreamProcessor for FilterProcessor {
-    fn start(&self) -> ProcessorView {
-        // Create only result channel - no stop channel needed
-        let (result_tx, result_rx) = utils::create_result_channel(self.downstream_count);
+    fn start(&self, input_receiver: broadcast::Receiver<StreamData>) -> ProcessorView {
+        // Create output channels for broadcasting to downstream
+        let output_senders: Vec<broadcast::Sender<StreamData>> = utils::create_output_senders(self.downstream_count);
         
-        // Spawn the filter routine - currently just passes data through
-        let routine = self.create_filter_routine(result_tx);
+        // Clone data that will be used in the async task
+        let processor_name = "FilterProcessor".to_string();
+        let downstream_count = self.downstream_count;
+        let output_senders_clone = output_senders.clone();
+        
+        // Clone for the routine (Receiver supports resubscribe)
+        let mut routine_input_receiver = input_receiver.resubscribe();
+        
+        // Spawn the filter routine
+        let routine = async move {
+            println!("{}: Starting filter routine for {} downstream processors", 
+                     processor_name, downstream_count);
+            
+            // Forward all control signals and data through the filter
+            loop {
+                match routine_input_receiver.recv().await {
+                    Ok(stream_data) => {
+                        println!("{}: Processing input: {:?}", processor_name, stream_data.description());
+                        
+                        // Check for stop signal
+                        if utils::is_stop_signal(&stream_data) {
+                            println!("{}: Received stop signal, shutting down gracefully", processor_name);
+                            // Forward stop signal to all outputs
+                            for sender in &output_senders_clone {
+                                let _ = sender.send(stream_data.clone());
+                            }
+                            break;
+                        }
+                        
+                        // Forward control signals to all outputs
+                        if stream_data.is_control() {
+                            for sender in &output_senders_clone {
+                                if sender.send(stream_data.clone()).is_err() {
+                                    println!("{}: Failed to forward control signal to some outputs", processor_name);
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        // Filter data items - for now just forward everything
+                        if stream_data.is_data() {
+                            // For now, forward all data without actual filtering
+                            for sender in &output_senders_clone {
+                                if sender.send(stream_data.clone()).is_err() {
+                                    println!("{}: Failed to forward data to some outputs", processor_name);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}: Input channel error: {}", processor_name, e);
+                        // Send error to all outputs
+                        let error_data = utils::handle_receive_error(e);
+                        for sender in &output_senders_clone {
+                            let _ = sender.send(error_data.clone());
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            println!("{}: Filter routine completed", processor_name);
+        };
         
         let join_handle = tokio::spawn(routine);
         
-        // For FilterProcessor, we don't need control sender - it processes data from upstream
-        ProcessorView::from_result_receiver(
-            result_rx,
+        // For FilterProcessor, we create input sender for control signals
+        let (input_sender, _) = utils::create_input_channel();
+        
+        ProcessorView::new(
+            Some(input_sender),
+            input_receiver,
+            output_senders,
             ProcessorHandle::new(join_handle),
         )
     }
@@ -67,116 +141,108 @@ impl StreamProcessor for FilterProcessor {
         self.downstream_count
     }
     
-    fn input_receivers(&self) -> Vec<broadcast::Receiver<StreamData>> {
-        self.input_receivers.iter()
-            .map(|rx| rx.resubscribe())
-            .collect()
+    fn create_input_channel(&self) -> (broadcast::Sender<StreamData>, broadcast::Receiver<StreamData>) {
+        utils::create_input_channel()
     }
 }
 
 // Private helper methods
 impl FilterProcessor {
-    /// Create filter routine that runs in tokio task - currently just passes data through
-    fn create_filter_routine(
-        &self,
-        result_tx: broadcast::Sender<StreamData>,
+    /// Create filter routine that runs in tokio task
+    /// Now with single input, multiple output architecture
+    pub fn create_filter_routine(
+        self: Arc<Self>,
+        mut input_receiver: broadcast::Receiver<StreamData>,
+        output_senders: Vec<broadcast::Sender<StreamData>>,
     ) -> impl std::future::Future<Output = ()> + Send + 'static {
-        let mut input_receivers = self.input_receivers();
-        let downstream_count = self.downstream_count;
         let processor_name = "FilterProcessor".to_string();
+        let downstream_count = self.downstream_count;
+        
+        // Clone filter function
+        let filter_func = self.clone();
         
         async move {
-            println!("FilterProcessor: Starting filter routine for {} downstream processors", downstream_count);
+            println!("{}: Starting filter routine for {} downstream processors", 
+                     processor_name, downstream_count);
             
-            // Send stream start signal
-            if result_tx.send(StreamData::stream_start()).is_err() {
-                println!("FilterProcessor: Failed to send start signal");
-                return;
-            }
-            
-            // Process incoming data (currently just passes through)
-            // TODO: Implement actual filtering logic
+            // Forward all control signals and data through the filter
             loop {
-                // Process from first input channel (simplified for now)
-                // In a real implementation, would need to handle multiple inputs properly
-                let result = async {
-                    if let Some(receiver) = input_receivers.get_mut(0) {
-                        receiver.recv().await
-                    } else {
-                        // No input receivers, this might be an error case
-                        // For now, just wait indefinitely - in reality this should probably end the processor
-                        futures::future::pending::<Result<StreamData, broadcast::error::RecvError>>().await
-                    }
-                };
-                
-                match result.await {
+                match input_receiver.recv().await {
                     Ok(stream_data) => {
-                        // Check for stop signal in the data stream
+                        println!("{}: Processing input: {:?}", processor_name, stream_data.description());
+                        
+                        // Check for stop signal
                         if utils::is_stop_signal(&stream_data) {
-                            println!("FilterProcessor: Received stop signal in data stream, shutting down");
+                            println!("{}: Received stop signal, shutting down gracefully", processor_name);
+                            // Forward stop signal to all outputs
+                            for sender in &output_senders {
+                                let _ = sender.send(stream_data.clone());
+                            }
                             break;
                         }
                         
-                        // Apply filter logic with error handling
+                        // Forward control signals to all outputs
+                        if stream_data.is_control() {
+                            for sender in &output_senders {
+                                if sender.send(stream_data.clone()).is_err() {
+                                    println!("{}: Failed to forward control signal to some outputs", processor_name);
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        // Filter data items
                         if stream_data.is_data() {
-                            if let Some(collection) = stream_data.as_collection() {
-                                match Self::static_should_include_static(collection) {
-                                    Ok(should_include) => {
-                                        if should_include {
-                                            // Data passes filter, send it downstream
-                                            if result_tx.send(stream_data).is_err() {
-                                                println!("FilterProcessor: All downstream receivers dropped, stopping");
-                                                break;
+                            match stream_data {
+                                StreamData::Collection(collection) => {
+                                    // Apply filter predicate
+                                    match filter_func.should_include(&*collection) {
+                                        Ok(true) => {
+                                            // Include this data - broadcast to all outputs
+                                            for sender in &output_senders {
+                                                if sender.send(StreamData::Collection(collection.clone())).is_err() {
+                                                    println!("{}: Failed to send filtered data to some outputs", processor_name);
+                                                }
                                             }
-                                        } else {
-                                            println!("FilterProcessor: Data filtered out");
+                                        }
+                                        Ok(false) => {
+                                            // Exclude this data - skip broadcasting
+                                            println!("{}: Filtered out data item", processor_name);
+                                        }
+                                        Err(e) => {
+                                            // Filter error - send error to all outputs
+                                            println!("{}: Filter error: {}", processor_name, e);
+                                            let error_data = StreamData::error(StreamError::new(e));
+                                            for sender in &output_senders {
+                                                let _ = sender.send(error_data.clone());
+                                            }
                                         }
                                     }
-                                    Err(filter_error) => {
-                                        // Filter processing error - send as StreamData::Error instead of stopping
-                                        println!("FilterProcessor: Error during filtering: {}", filter_error);
-                                        let stream_error = StreamError::new(filter_error)
-                                            .with_source(&processor_name)
-                                            .with_timestamp(std::time::SystemTime::now());
-                                        
-                                        if result_tx.send(StreamData::error(stream_error)).is_err() {
-                                            println!("FilterProcessor: All downstream receivers dropped, stopping");
-                                            break;
+                                }
+                                _ => {
+                                    // Non-collection data - forward as-is
+                                    for sender in &output_senders {
+                                        if sender.send(stream_data.clone()).is_err() {
+                                            println!("{}: Failed to forward non-collection data to some outputs", processor_name);
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            // Pass through control signals and errors
-                            if result_tx.send(stream_data).is_err() {
-                                println!("FilterProcessor: All downstream receivers dropped, stopping");
-                                break;
-                            }
                         }
                     }
                     Err(e) => {
-                        // Handle broadcast errors
+                        println!("{}: Input channel error: {}", processor_name, e);
+                        // Send error to all outputs
                         let error_data = utils::handle_receive_error(e);
-                        if result_tx.send(error_data).is_err() {
-                            println!("FilterProcessor: All downstream receivers dropped, stopping");
-                            break;
+                        for sender in &output_senders {
+                            let _ = sender.send(error_data.clone());
                         }
+                        break;
                     }
                 }
             }
             
-            // Send stream end signal
-            if result_tx.send(StreamData::stream_end()).is_err() {
-                println!("FilterProcessor: Failed to send end signal");
-            }
-            
-            println!("FilterProcessor: Filter routine completed");
+            println!("{}: Filter routine completed", processor_name);
         }
-    }
-    
-    /// Static version of should_include for use in async routine
-    fn static_should_include_static(_data: &dyn crate::model::Collection) -> Result<bool, String> {
-        // TODO: Implement actual filtering logic
-        Ok(true)
     }
 }

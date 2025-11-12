@@ -2,6 +2,8 @@
 //! 
 //! This module builds a tree of StreamProcessors from a PhysicalPlan tree,
 //! following the pattern of rstream's ExecutorBuilder.
+//! 
+//! Updated for single input, multiple output architecture.
 
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -44,19 +46,23 @@ impl ProcessorBuilder {
     fn build_datasource_processor(&self, physical_plan: Arc<dyn PhysicalPlan>) -> Result<ProcessorBuildResult, String> {
         // For now, assume 1 downstream processor
         let downstream_count = 1;
-        let input_receivers = Vec::new(); // Data source has no inputs
         
         let processor = Arc::new(DataSourceProcessor::new(
             physical_plan.clone(),
-            input_receivers,
             downstream_count,
         ));
         
-        let processor_view = processor.start();
+        let (input_sender, input_receiver) = processor.create_input_channel();
+        let processor_view = processor.start(input_receiver);
+        
+        // Get output from the first output sender
+        let output_receiver = processor_view.output_sender(0)
+            .ok_or("DataSourceProcessor has no outputs")?
+            .subscribe();
         
         Ok(ProcessorBuildResult {
             processor,
-            output_receiver: processor_view.result_resubscribe(),
+            output_receiver,
         })
     }
     
@@ -64,20 +70,23 @@ impl ProcessorBuilder {
     fn build_filter_processor(&self, physical_plan: Arc<dyn PhysicalPlan>) -> Result<ProcessorBuildResult, String> {
         // For now, assume 1 downstream processor
         let downstream_count = 1;
-        // For now, no input receivers - this will be connected later
-        let input_receivers = Vec::new();
         
         let processor = Arc::new(FilterProcessor::new(
             physical_plan.clone(),
-            input_receivers,
             downstream_count,
         ));
         
-        let processor_view = processor.start();
+        let (input_sender, input_receiver) = processor.create_input_channel();
+        let processor_view = processor.start(input_receiver);
+        
+        // Get output from the first output sender
+        let output_receiver = processor_view.output_sender(0)
+            .ok_or("FilterProcessor has no outputs")?
+            .subscribe();
         
         Ok(ProcessorBuildResult {
             processor,
-            output_receiver: processor_view.result_resubscribe(),
+            output_receiver,
         })
     }
     
@@ -85,20 +94,23 @@ impl ProcessorBuilder {
     fn build_project_processor(&self, physical_plan: Arc<dyn PhysicalPlan>) -> Result<ProcessorBuildResult, String> {
         // For now, assume 1 downstream processor
         let downstream_count = 1;
-        // For now, no input receivers - this will be connected later
-        let input_receivers = Vec::new();
         
         let processor = Arc::new(ProjectProcessor::new(
             physical_plan.clone(),
-            input_receivers,
             downstream_count,
         ));
         
-        let processor_view = processor.start();
+        let (input_sender, input_receiver) = processor.create_input_channel();
+        let processor_view = processor.start(input_receiver);
+        
+        // Get output from the first output sender
+        let output_receiver = processor_view.output_sender(0)
+            .ok_or("ProjectProcessor has no outputs")?
+            .subscribe();
         
         Ok(ProcessorBuildResult {
             processor,
-            output_receiver: processor_view.result_resubscribe(),
+            output_receiver,
         })
     }
 }
