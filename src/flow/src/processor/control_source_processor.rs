@@ -8,16 +8,16 @@ use crate::processor::{Processor, ProcessorError, StreamData};
 
 /// ControlSourceProcessor - handles control signals for the pipeline
 ///
-/// This processor acts as the starting point of the data flow. It can:
-/// - Receive StreamData (which may contain control signals, data, or errors) from inputs
-/// - Forward StreamData to downstream processors
-/// - Coordinate the start/end of stream processing
+/// This processor acts as the starting point of the data flow. It:
+/// - Receives StreamData from a single input (single-input)
+/// - Forwards StreamData to multiple downstream processors (multi-output)
+/// - Coordinates the start/end of stream processing
 pub struct ControlSourceProcessor {
     /// Processor identifier
     id: String,
-    /// Input channels for receiving StreamData
-    inputs: Vec<mpsc::Receiver<StreamData>>,
-    /// Output channels for sending StreamData downstream
+    /// Single input channel for receiving StreamData (single-input)
+    input: Option<mpsc::Receiver<StreamData>>,
+    /// Output channels for sending StreamData downstream (multi-output)
     outputs: Vec<mpsc::Sender<StreamData>>,
 }
 
@@ -26,7 +26,7 @@ impl ControlSourceProcessor {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            inputs: Vec::new(),
+            input: None,
             outputs: Vec::new(),
         }
     }
@@ -50,46 +50,42 @@ impl Processor for ControlSourceProcessor {
     
     fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
         let _id = self.id.clone();
-        let mut inputs = std::mem::take(&mut self.inputs);
+        let mut input = self.input.take()
+            .ok_or_else(|| ProcessorError::InvalidConfiguration(
+                "ControlSourceProcessor input must be set before starting".to_string()
+            ));
         let outputs = self.outputs.clone();
         
         tokio::spawn(async move {
+            let mut input = match input {
+                Ok(input) => input,
+                Err(e) => return Err(e),
+            };
+            
             loop {
-                let mut all_closed = true;
-                
-                // Check all input channels
-                for input in &mut inputs {
-                    match input.try_recv() {
-                        Ok(data) => {
-                            all_closed = false;
-                            // Forward to all outputs
-                            for output in &outputs {
-                                if output.send(data.clone()).await.is_err() {
-                                    return Err(ProcessorError::ChannelClosed);
-                                }
-                            }
-                            // Check if this is a terminal signal
-                            if data.is_terminal() {
-                                return Ok(());
+                match input.try_recv() {
+                    Ok(data) => {
+                        // Forward to all outputs
+                        for output in &outputs {
+                            if output.send(data.clone()).await.is_err() {
+                                return Err(ProcessorError::ChannelClosed);
                             }
                         }
-                        Err(mpsc::error::TryRecvError::Empty) => {
-                            // Channel not empty but no data ready
-                            all_closed = false;
-                        }
-                        Err(mpsc::error::TryRecvError::Disconnected) => {
-                            // Channel disconnected
+                        // Check if this is a terminal signal
+                        if data.is_terminal() {
+                            return Ok(());
                         }
                     }
-                }
-                
-                // If all channels are closed, exit
-                if all_closed {
-                    // Send StreamEnd to all outputs before exiting
-                    for output in &outputs {
-                        let _ = output.send(StreamData::stream_end()).await;
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        // Channel not empty but no data ready, continue
                     }
-                    return Ok(());
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        // Channel disconnected, send StreamEnd to all outputs and exit
+                        for output in &outputs {
+                            let _ = output.send(StreamData::stream_end()).await;
+                        }
+                        return Ok(());
+                    }
                 }
                 
                 // Yield to allow other tasks to run
@@ -103,7 +99,9 @@ impl Processor for ControlSourceProcessor {
     }
     
     fn add_input(&mut self, receiver: mpsc::Receiver<StreamData>) {
-        self.inputs.push(receiver);
+        // ControlSourceProcessor only supports single input
+        // If input is already set, replace it
+        self.input = Some(receiver);
     }
     
     fn add_output(&mut self, sender: mpsc::Sender<StreamData>) {
