@@ -1,5 +1,6 @@
 use std::any::Any;
 use datatypes::Value;
+use crate::planner::physical::PhysicalProjectField;
 
 /// Collection trait defines the interface for multi-row data structures
 /// 
@@ -34,6 +35,24 @@ pub trait Collection: Send + Sync + Any {
     
     /// Create a new collection with the specified column indices (projection)
     fn project(&self, column_indices: &[usize]) -> Result<Box<dyn Collection>, CollectionError>;
+    
+    /// Apply projection based on PhysicalProjectField definitions
+    /// This creates a new collection with projected fields based on the provided field definitions
+    /// 
+    /// # Arguments
+    /// * `fields` - A slice of PhysicalProjectField containing the projection field definitions
+    /// 
+    /// # Returns
+    /// A new collection with the projected fields, or an error if projection fails
+    /// 
+    /// # Note
+    /// This is an abstract method that must be implemented by specific collection types.
+    /// Implementations should consider the collection's storage characteristics (e.g., columnar vs row-based)
+    /// for optimal performance. For example:
+    /// - Columnar implementations (like RecordBatch) should work directly with columns
+    /// - Row-based implementations might need to iterate through rows
+    /// - Expression evaluation should be batched for better performance
+    fn apply_projection(&self, fields: &[PhysicalProjectField]) -> Result<Box<dyn Collection>, CollectionError>;
     
     /// Clone this collection
     fn clone_box(&self) -> Box<dyn Collection>;

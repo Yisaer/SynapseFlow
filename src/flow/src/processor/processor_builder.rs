@@ -1,3 +1,4 @@
+
 //! Processor builder - creates and connects processors from PhysicalPlan
 //!
 //! This module provides utilities to build processor pipelines from PhysicalPlan,
@@ -8,21 +9,19 @@ use tokio::task::JoinHandle;
 use std::sync::Arc;
 use crate::processor::{
     Processor, ProcessorError, 
-    ControlSourceProcessor, DataSourceProcessor, ResultSinkProcessor, StreamData,
+    ControlSourceProcessor, DataSourceProcessor, ProjectProcessor, ResultSinkProcessor, StreamData,
 };
-use crate::planner::physical::{PhysicalPlan, PhysicalDataSource};
+use crate::planner::physical::{PhysicalPlan, PhysicalDataSource, PhysicalProject};
 
 /// Enum for all processor types created from PhysicalPlan
 ///
 /// This enum allows storing different types of processors in a unified way.
-/// Currently only DataSourceProcessor is implemented, but more types can be added.
+/// Currently supports DataSourceProcessor and ProjectProcessor.
 pub enum PlanProcessor {
     /// DataSourceProcessor created from PhysicalDatasource
     DataSource(DataSourceProcessor),
-    // Future processor types can be added here:
-    // Filter(FilterProcessor),
-    // Project(ProjectProcessor),
-    // etc.
+    /// ProjectProcessor created from PhysicalProject
+    Project(ProjectProcessor),
 }
 
 impl PlanProcessor {
@@ -30,6 +29,7 @@ impl PlanProcessor {
     pub fn id(&self) -> &str {
         match self {
             PlanProcessor::DataSource(p) => p.id(),
+            PlanProcessor::Project(p) => p.id(),
         }
     }
     
@@ -37,6 +37,7 @@ impl PlanProcessor {
     pub fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
         match self {
             PlanProcessor::DataSource(p) => p.start(),
+            PlanProcessor::Project(p) => p.start(),
         }
     }
     
@@ -44,6 +45,7 @@ impl PlanProcessor {
     pub fn output_senders(&self) -> Vec<mpsc::Sender<crate::processor::StreamData>> {
         match self {
             PlanProcessor::DataSource(p) => p.output_senders(),
+            PlanProcessor::Project(p) => p.output_senders(),
         }
     }
     
@@ -51,6 +53,7 @@ impl PlanProcessor {
     pub fn add_input(&mut self, receiver: mpsc::Receiver<crate::processor::StreamData>) {
         match self {
             PlanProcessor::DataSource(p) => p.add_input(receiver),
+            PlanProcessor::Project(p) => p.add_input(receiver),
         }
     }
     
@@ -58,6 +61,7 @@ impl PlanProcessor {
     pub fn add_output(&mut self, sender: mpsc::Sender<crate::processor::StreamData>) {
         match self {
             PlanProcessor::DataSource(p) => p.add_output(sender),
+            PlanProcessor::Project(p) => p.add_output(sender),
         }
     }
 }
@@ -119,6 +123,26 @@ impl ProcessorPipeline {
 
         Ok(())
     }
+
+    /// Send StreamData to a specific downstream processor by id
+    ///
+    /// This method directly delegates to ControlSourceProcessor's send_stream_data method,
+    /// providing a convenient interface for sending data to specific processors in the pipeline.
+    ///
+    /// # Arguments
+    /// * `processor_id` - The ID of the target processor
+    /// * `data` - The StreamData to send
+    ///
+    /// # Returns
+    /// * `Ok(())` if the data was sent successfully
+    /// * `Err(ProcessorError)` if the processor was not found or channel error occurred
+    pub async fn send_stream_data(
+        &self,
+        processor_id: &str,
+        data: StreamData,
+    ) -> Result<(), ProcessorError> {
+        self.control_source.send_stream_data(processor_id, data).await
+    }
 }
 
 /// Create a processor from a PhysicalPlan node
@@ -134,7 +158,7 @@ impl ProcessorPipeline {
 /// A PlanProcessor enum variant corresponding to the plan type
 pub fn create_processor_from_plan_node(
     plan: &Arc<dyn PhysicalPlan>,
-    idx: usize,
+    _idx: usize,
 ) -> Result<PlanProcessor, ProcessorError> {
     if let Some(ds) = plan.as_any().downcast_ref::<PhysicalDataSource>() {
         let processor_id = ds.source_name();
@@ -143,6 +167,13 @@ pub fn create_processor_from_plan_node(
             Arc::new(ds.clone()),
         );
         Ok(PlanProcessor::DataSource(processor))
+    } else if let Some(proj) = plan.as_any().downcast_ref::<PhysicalProject>() {
+        let processor_id = format!("project_{}", _idx);
+        let processor = ProjectProcessor::new(
+            processor_id,
+            Arc::new(proj.clone()),
+        );
+        Ok(PlanProcessor::Project(processor))
     } else {
         Err(ProcessorError::InvalidConfiguration(format!(
             "Unsupported PhysicalPlan type: {}",
@@ -329,4 +360,51 @@ pub fn create_processor_pipeline(
         result_sink,
         handles: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::planner::physical::{PhysicalProject, PhysicalProjectField, PhysicalDataSource};
+    use sqlparser::ast::{Expr, Value as SqlValue};
+    use crate::expr::ScalarExpr;
+    use datatypes::{Value, ConcreteDatatype};
+
+    #[test]
+    fn test_create_processor_from_physical_project() {
+        // Create a simple data source
+        let data_source: Arc<dyn crate::planner::physical::PhysicalPlan> =
+            Arc::new(PhysicalDataSource::new("test_source".to_string(), 0));
+
+        // Create a projection field
+        let project_field = PhysicalProjectField::new(
+            "projected_field".to_string(),
+            Expr::Value(SqlValue::Number("42".to_string(), false)),
+            ScalarExpr::Literal(Value::Int64(42), ConcreteDatatype::Int64(datatypes::Int64Type)),
+        );
+
+        // Create a PhysicalProject
+        let physical_project: Arc<dyn crate::planner::physical::PhysicalPlan> =
+            Arc::new(PhysicalProject::with_single_child(
+                vec![project_field],
+                data_source,
+                1,
+            ));
+
+        // Try to create a processor from the PhysicalProject
+        let result = create_processor_from_plan_node(&physical_project, 0);
+        
+        assert!(result.is_ok(), "Should successfully create processor from PhysicalProject");
+        
+        match result {
+            Ok(processor) => {
+                assert_eq!(processor.id(), "project_0");
+                println!("✅ SUCCESS: PhysicalProject processor created with ID: {}", processor.id());
+            }
+            Err(e) => {
+                panic!("Failed to create PhysicalProject processor: {}", e);
+            }
+        }
+    }
 }

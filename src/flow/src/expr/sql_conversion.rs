@@ -121,7 +121,7 @@ pub fn convert_expr_to_scalar(expr: &Expr) -> Result<ScalarExpr, ConversionError
         // Simple column reference like "a"
         Expr::Identifier(ident) => convert_identifier_to_column(ident),
 
-        // Compound identifier like "table.column" or "db.table.column"
+        // Compound identifier like "table.column"
         Expr::CompoundIdentifier(idents) => convert_compound_identifier_to_column(idents),
 
         // Literals like 1, 'hello', true
@@ -199,10 +199,7 @@ fn convert_identifier_to_column(
     ident: &Ident,
 ) -> Result<ScalarExpr, ConversionError> {
     let column_name = &ident.value;
-
-    // For simple identifiers without source, we'll use "default" as source_name
-    // This matches the behavior in Tuple::new_from_json for simple column names
-    Ok(ScalarExpr::column("default", column_name))
+    Ok(ScalarExpr::column("", column_name))
 }
 
 /// Convert CompoundIdentifier to Column reference

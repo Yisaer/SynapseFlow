@@ -9,7 +9,7 @@ pub mod physical_filter;
 
 pub use base_physical::BasePhysicalPlan;
 pub use physical_data_source::PhysicalDataSource;
-pub use physical_project::PhysicalProject;
+pub use physical_project::{PhysicalProject, PhysicalProjectField};
 pub use physical_filter::PhysicalFilter;
 
 /// Core trait for all physical operators in the stream processing engine

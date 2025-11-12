@@ -79,8 +79,8 @@ impl ScalarExpr {
     pub fn eval_vectorized(&self, evaluator: &DataFusionEvaluator, collection: &dyn Collection) -> Result<Vec<Value>, EvalError> {
         match self {
             ScalarExpr::Column { source_name, column_name } => {
-                // Direct column access - most efficient case
                 collection.column_by_name(source_name, column_name)
+                    .or_else(|| collection.column_by_name("", column_name))
                     .map(|col| col.values().to_vec())
                     .ok_or_else(|| EvalError::ColumnNotFound {
                         source: source_name.clone(),

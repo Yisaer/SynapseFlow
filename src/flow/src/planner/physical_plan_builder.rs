@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::planner::logical::{LogicalPlan, DataSource as LogicalDataSource, Filter as LogicalFilter, Project as LogicalProject};
 use crate::planner::physical::{PhysicalPlan, PhysicalDataSource, PhysicalFilter, PhysicalProject};
 use crate::planner::physical::physical_project::PhysicalProjectField;
+use crate::expr::sql_conversion::convert_expr_to_scalar;
 
 /// Create a physical plan from a logical plan
 /// 
@@ -48,8 +49,13 @@ fn create_physical_filter(
         physical_children.push(physical_child);
     }
     
+    // Convert SQL Expr to ScalarExpr
+    let scalar_predicate = convert_expr_to_scalar(&logical_filter.predicate)
+        .map_err(|e| format!("Failed to convert filter predicate to scalar expression: {}", e))?;
+    
     let physical_filter = PhysicalFilter::new(
         logical_filter.predicate.clone(),
+        scalar_predicate,
         physical_children,
         index,
     );
