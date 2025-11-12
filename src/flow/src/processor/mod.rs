@@ -20,9 +20,6 @@ pub use control_source_processor::ControlSourceProcessor;
 pub use datasource_processor::DataSourceProcessor;
 pub use result_sink_processor::ResultSinkProcessor;
 pub use processor_builder::{
-    connect_control_source_to_leaf_nodes, 
-    find_leaf_nodes, 
-    create_processor_from_physical_plan,
     create_processor_pipeline,
     ProcessorPipeline,
 };

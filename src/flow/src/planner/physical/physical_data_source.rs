@@ -21,14 +21,9 @@ impl PhysicalDataSource {
             source_name,
         }
     }
-    
-    /// Create a new PhysicalDataSource with source information
-    pub fn with_source_info(source_name: String, _source_info: std::collections::HashMap<String, String>, index: i64) -> Self {
-        let base = BasePhysicalPlan::new_leaf(index);
-        Self {
-            base,
-            source_name,
-        }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
     }
 }
 

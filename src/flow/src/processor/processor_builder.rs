@@ -121,70 +121,6 @@ impl ProcessorPipeline {
     }
 }
 
-/// Connect ControlSourceProcessor outputs to all leaf nodes in PhysicalPlan
-///
-/// Leaf nodes are PhysicalPlan nodes that have no children.
-/// Currently, only PhysicalDatasource is supported as a leaf node.
-///
-/// # Arguments
-/// * `control_source` - The ControlSourceProcessor whose outputs will be connected
-/// * `physical_plan` - The PhysicalPlan to traverse and find leaf nodes
-///
-/// # Returns
-/// A vector of DataSourceProcessor created from leaf nodes, with their inputs connected to control_source outputs
-pub fn connect_control_source_to_leaf_nodes(
-    control_source: &mut ControlSourceProcessor,
-    physical_plan: Arc<dyn PhysicalPlan>,
-) -> Result<Vec<DataSourceProcessor>, ProcessorError> {
-    let mut processors = Vec::new();
-    let leaf_nodes = find_leaf_nodes(physical_plan);
-    
-    for (idx, leaf) in leaf_nodes.iter().enumerate() {
-        // Create processor from leaf node
-        if let Some(ds) = leaf.as_any().downcast_ref::<PhysicalDataSource>() {
-            let processor_id = format!("datasource_{}", idx);
-            let mut datasource_processor = DataSourceProcessor::new(
-                processor_id.clone(),
-                Arc::new(ds.clone()),
-            );
-            
-            // Create channel to connect control_source output to datasource_processor input
-            let (sender, receiver) = mpsc::channel(100);
-            control_source.add_output(sender);
-            datasource_processor.add_input(receiver);
-            
-            processors.push(datasource_processor);
-        } else {
-            return Err(ProcessorError::InvalidConfiguration(format!(
-                "Unsupported leaf node type: {}",
-                leaf.get_plan_type()
-            )));
-        }
-    }
-    
-    Ok(processors)
-}
-
-/// Find all leaf nodes (nodes without children) in a PhysicalPlan
-///
-/// This function recursively traverses the PhysicalPlan tree and collects
-/// all nodes that have no children.
-pub fn find_leaf_nodes(plan: Arc<dyn PhysicalPlan>) -> Vec<Arc<dyn PhysicalPlan>> {
-    let mut leaf_nodes = Vec::new();
-    
-    if plan.children().is_empty() {
-        // This is a leaf node
-        leaf_nodes.push(plan);
-    } else {
-        // Recursively find leaf nodes in children
-        for child in plan.children() {
-            leaf_nodes.extend(find_leaf_nodes(Arc::clone(child)));
-        }
-    }
-    
-    leaf_nodes
-}
-
 /// Create a processor from a PhysicalPlan node
 ///
 /// This function dispatches to the appropriate processor creation function
@@ -201,7 +137,7 @@ pub fn create_processor_from_plan_node(
     idx: usize,
 ) -> Result<PlanProcessor, ProcessorError> {
     if let Some(ds) = plan.as_any().downcast_ref::<PhysicalDataSource>() {
-        let processor_id = format!("datasource_{}", idx);
+        let processor_id = ds.source_name.clone();
         let processor = DataSourceProcessor::new(
             processor_id,
             Arc::new(ds.clone()),
@@ -213,20 +149,6 @@ pub fn create_processor_from_plan_node(
             plan.get_plan_type()
         )))
     }
-}
-
-/// Create a DataSourceProcessor from a PhysicalPlan if it's a PhysicalDatasource
-///
-/// This is a convenience function for creating DataSourceProcessor specifically.
-/// For general use, prefer `create_processor_from_plan_node`.
-pub fn create_processor_from_physical_plan(
-    id: impl Into<String>,
-    plan: Arc<dyn PhysicalPlan>,
-) -> Option<DataSourceProcessor> {
-    plan.as_any().downcast_ref::<PhysicalDataSource>().map(|ds| DataSourceProcessor::new(
-        id,
-        Arc::new(ds.clone()),
-    ))
 }
 
 /// Internal structure to track processors created from PhysicalPlan nodes
