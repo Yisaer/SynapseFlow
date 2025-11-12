@@ -4,6 +4,7 @@
 //! that coordinate the entire stream processing pipeline.
 
 use tokio::sync::mpsc;
+use std::collections::HashMap;
 use crate::processor::{Processor, ProcessorError, StreamData};
 
 /// ControlSourceProcessor - handles control signals for the pipeline
@@ -19,6 +20,8 @@ pub struct ControlSourceProcessor {
     input: Option<mpsc::Receiver<StreamData>>,
     /// Output channels for sending StreamData downstream (multi-output)
     outputs: Vec<mpsc::Sender<StreamData>>,
+    /// Mapping from downstream processor id to output channel
+    output_map: HashMap<String, mpsc::Sender<StreamData>>,
 }
 
 impl ControlSourceProcessor {
@@ -28,6 +31,7 @@ impl ControlSourceProcessor {
             id: id.into(),
             input: None,
             outputs: Vec::new(),
+            output_map: HashMap::new(),
         }
     }
     
@@ -40,6 +44,36 @@ impl ControlSourceProcessor {
                 .map_err(|_| ProcessorError::ChannelClosed)?;
         }
         Ok(())
+    }
+
+    /// Register an output channel for a specific downstream processor id
+    pub fn add_output_for_processor(
+        &mut self,
+        processor_id: impl Into<String>,
+        sender: mpsc::Sender<StreamData>,
+    ) {
+        let id = processor_id.into();
+        self.outputs.push(sender.clone());
+        self.output_map.insert(id, sender);
+    }
+
+    /// Send StreamData to a specific downstream processor by id
+    pub async fn send_stream_data(
+        &self,
+        processor_id: &str,
+        data: StreamData,
+    ) -> Result<(), ProcessorError> {
+        if let Some(output) = self.output_map.get(processor_id) {
+            output
+                .send(data)
+                .await
+                .map_err(|_| ProcessorError::ChannelClosed)
+        } else {
+            Err(ProcessorError::InvalidConfiguration(format!(
+                "Unknown processor id: {}",
+                processor_id
+            )))
+        }
     }
 }
 
@@ -105,6 +139,7 @@ impl Processor for ControlSourceProcessor {
     }
     
     fn add_output(&mut self, sender: mpsc::Sender<StreamData>) {
-        self.outputs.push(sender);
+        let auto_id = format!("auto_output_{}", self.outputs.len());
+        self.add_output_for_processor(auto_id, sender);
     }
 }

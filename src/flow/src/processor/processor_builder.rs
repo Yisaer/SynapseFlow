@@ -137,7 +137,7 @@ pub fn create_processor_from_plan_node(
     idx: usize,
 ) -> Result<PlanProcessor, ProcessorError> {
     if let Some(ds) = plan.as_any().downcast_ref::<PhysicalDataSource>() {
-        let processor_id = ds.source_name.clone();
+        let processor_id = ds.source_name();
         let processor = DataSourceProcessor::new(
             processor_id,
             Arc::new(ds.clone()),
@@ -249,8 +249,9 @@ fn connect_processors(
     let leaf_indices = collect_leaf_indices(Arc::clone(&physical_plan));
     for leaf_index in leaf_indices {
         if let Some(processor) = processor_map.get_processor_mut(leaf_index) {
+            let processor_id = processor.id().to_string();
             let (sender, receiver) = mpsc::channel(100);
-            control_source.add_output(sender);
+            control_source.add_output_for_processor(processor_id, sender);
             processor.add_input(receiver);
         }
     }
