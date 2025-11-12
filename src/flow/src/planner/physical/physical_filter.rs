@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::sync::Arc;
 use crate::planner::physical::{PhysicalPlan, BasePhysicalPlan};
+use crate::expr::ScalarExpr;
 use sqlparser::ast::Expr;
 
 /// Physical operator for filter operations
@@ -11,19 +12,33 @@ use sqlparser::ast::Expr;
 pub struct PhysicalFilter {
     pub base: BasePhysicalPlan,
     pub predicate: Expr,
+    pub scalar_predicate: ScalarExpr,
 }
 
 impl PhysicalFilter {
     /// Create a new PhysicalFilter
-    pub fn new(predicate: Expr, children: Vec<Arc<dyn PhysicalPlan>>, index: i64) -> Self {
+    pub fn new(
+        predicate: Expr,
+        scalar_predicate: ScalarExpr,
+        children: Vec<Arc<dyn PhysicalPlan>>,
+        index: i64,
+    ) -> Self {
         let base = BasePhysicalPlan::new(children, index);
-        Self { base, predicate }
+        Self {
+            base,
+            predicate,
+            scalar_predicate,
+        }
     }
-    
-    /// Create a new PhysicalFilter with a single child
-    pub fn with_single_child(predicate: Expr, child: Arc<dyn PhysicalPlan>, index: i64) -> Self {
-        let base = BasePhysicalPlan::new(vec![child], index);
-        Self { base, predicate }
+
+    /// Create a new PhysicalFilter with only scalar predicate
+    pub fn new_scalar(scalar_predicate: ScalarExpr, children: Vec<Arc<dyn PhysicalPlan>>, index: i64) -> Self {
+        let base = BasePhysicalPlan::new(children, index);
+        Self {
+            base,
+            predicate: Expr::Value(sqlparser::ast::Value::Boolean(true)),
+            scalar_predicate,
+        }
     }
 }
 
