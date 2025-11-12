@@ -22,7 +22,9 @@ pub fn transform_aggregate_functions(
     for field in &mut select_stmt.select_fields {
         let (new_expr, field_aggregates) = extract_and_replace_aggregates(&field.expr, &mut replacement_counter)?;
 
-        field.alias = Some(field.expr.to_string());
+        if !field_aggregates.is_empty() && field.alias.is_none() {
+            field.alias = Some(field.expr.to_string());
+        }
         // Update the field expression
         field.expr = new_expr;
         
