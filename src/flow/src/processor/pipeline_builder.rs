@@ -4,7 +4,7 @@
 //! Each processor runs in its own tokio task and communicates via broadcast channels.
 
 use std::sync::Arc;
-use crate::planner::physical::PhysicalPlan;
+use crate::planner::physical::{PhysicalPlan, PhysicalDataSource, PhysicalFilter, PhysicalProject};
 use crate::processor::{DataSourceProcessor, FilterProcessor, ProjectProcessor, ProcessorView, StreamData, stream_processor::StreamProcessor};
 use tokio::sync::broadcast;
 
@@ -33,101 +33,109 @@ pub fn build_processor_pipeline(
     physical_plan: Arc<dyn PhysicalPlan>,
 ) -> Result<ProcessorNode, String> {
     // Build the pipeline recursively
-    build_processor_node(physical_plan, Vec::new())
+    build_processor_node(physical_plan)
 }
 
-/// Build a processor node and its subtree
+/// Build a processor node and its subtree using type-safe downcasting
+/// 
+/// This function uses downcast_ref to match concrete physical plan types,
+/// providing better type safety than string-based matching.
 fn build_processor_node(
     physical_plan: Arc<dyn PhysicalPlan>,
-    _upstream_receivers: Vec<broadcast::Receiver<StreamData>>,
 ) -> Result<ProcessorNode, String> {
-    // Determine downstream count by counting direct children
-    let downstream_count = physical_plan.children().len();
-    
-    if downstream_count == 0 {
-        // Leaf node (usually DataSource) - create with no upstream
-        return build_leaf_processor(physical_plan, downstream_count.max(1)); // At least 1 for final output
-    }
-    
-    // Non-leaf node - first build children, then create this processor
+    // First, recursively build all child processors and collect their output receivers
     let mut child_receivers = Vec::new();
     
-    // Build all child processors and collect their output receivers
     for child in physical_plan.children() {
-        let child_node = build_processor_node(child.clone(), Vec::new())?;
-        // Get the output receiver from child's processor view - this gives us StreamData directly
+        let child_node = build_processor_node(child.clone())?;
         let result_rx = child_node.processor_view.result_resubscribe();
-        
-        // Create a wrapper channel that unwraps the Result<StreamData, String> to StreamData
-        // For now, we'll pass the result receiver directly and let processors handle Results
-        // In a real implementation, we might want to handle errors at the channel level
         child_receivers.push(result_rx);
     }
     
-    // Create this processor with child receivers as upstream
-    build_non_leaf_processor(physical_plan, child_receivers, downstream_count.max(1))
-}
-
-/// Build a leaf processor (no children, typically DataSource)
-fn build_leaf_processor(
-    physical_plan: Arc<dyn PhysicalPlan>,
-    downstream_count: usize,
-) -> Result<ProcessorNode, String> {
-    match physical_plan.get_plan_type() {
-        "PhysicalDataSource" => {
-            let processor = Arc::new(DataSourceProcessor::new(
-                physical_plan.clone(),
-                Vec::new(), // No upstream for data source
-                downstream_count,
-            ));
-            
-            let processor_view = processor.start();
-            Ok(ProcessorNode {
-                processor,
-                processor_view,
-            })
-        }
-        plan_type => Err(format!("Unsupported leaf processor type: {}", plan_type))
+    // Use downcast_ref for type-safe matching of concrete plan types
+    if let Some(data_source) = physical_plan.as_any().downcast_ref::<PhysicalDataSource>() {
+        build_data_source_processor(data_source, physical_plan.clone(), child_receivers)
+    } else if let Some(filter) = physical_plan.as_any().downcast_ref::<PhysicalFilter>() {
+        build_filter_processor(filter, physical_plan.clone(), child_receivers)
+    } else if let Some(project) = physical_plan.as_any().downcast_ref::<PhysicalProject>() {
+        build_project_processor(project, physical_plan.clone(), child_receivers)
+    } else {
+        Err(format!(
+            "Unsupported physical plan type: {:?}", 
+            std::any::type_name_of_val(physical_plan.as_ref())
+        ))
     }
 }
 
-/// Build a non-leaf processor (has children)
-fn build_non_leaf_processor(
+/// Build a DataSource processor
+/// 
+/// DataSource is typically a leaf node but we treat all plans uniformly,
+/// allowing for future extensions where DataSource might have children.
+fn build_data_source_processor(
+    _data_source: &PhysicalDataSource,
     physical_plan: Arc<dyn PhysicalPlan>,
     upstream_receivers: Vec<broadcast::Receiver<Result<StreamData, String>>>,
-    downstream_count: usize,
 ) -> Result<ProcessorNode, String> {
-    match physical_plan.get_plan_type() {
-        "PhysicalFilter" => {
-            // For FilterProcessor, we need to convert from Result<StreamData, String> receivers to StreamData receivers
-            // For now, we'll create a simple wrapper, but in reality processors should handle Results directly
-            let processor = Arc::new(FilterProcessor::new(
-                physical_plan.clone(),
-                Vec::new(), // We'll handle the result wrapping in the processor
-                downstream_count,
-            ));
-            
-            let processor_view = processor.start();
-            Ok(ProcessorNode {
-                processor,
-                processor_view,
-            })
-        }
-        "PhysicalProject" => {
-            let processor = Arc::new(ProjectProcessor::new(
-                physical_plan.clone(),
-                Vec::new(), // We'll handle the result wrapping in the processor
-                downstream_count,
-            ));
-            
-            let processor_view = processor.start();
-            Ok(ProcessorNode {
-                processor,
-                processor_view,
-            })
-        }
-        plan_type => Err(format!("Unsupported non-leaf processor type: {}", plan_type))
-    }
+    // For now, assume 1 downstream processor (can be improved later)
+    let downstream_count = 1;
+    
+    let processor = Arc::new(DataSourceProcessor::new(
+        physical_plan,
+        upstream_receivers,
+        downstream_count,
+    ));
+    
+    let processor_view = processor.start();
+    Ok(ProcessorNode {
+        processor,
+        processor_view,
+    })
+}
+
+/// Build a Filter processor
+/// 
+/// Filter processes data from its children (upstream) and applies filtering logic.
+fn build_filter_processor(
+    _filter: &PhysicalFilter,
+    physical_plan: Arc<dyn PhysicalPlan>,
+    upstream_receivers: Vec<broadcast::Receiver<Result<StreamData, String>>>,
+) -> Result<ProcessorNode, String> {
+    let downstream_count = 1;
+    
+    let processor = Arc::new(FilterProcessor::new(
+        physical_plan,
+        upstream_receivers,
+        downstream_count,
+    ));
+    
+    let processor_view = processor.start();
+    Ok(ProcessorNode {
+        processor,
+        processor_view,
+    })
+}
+
+/// Build a Project processor
+/// 
+/// Project processes data from its children (upstream) and applies projection logic.
+fn build_project_processor(
+    _project: &PhysicalProject,
+    physical_plan: Arc<dyn PhysicalPlan>,
+    upstream_receivers: Vec<broadcast::Receiver<Result<StreamData, String>>>,
+) -> Result<ProcessorNode, String> {
+    let downstream_count = 1;
+    
+    let processor = Arc::new(ProjectProcessor::new(
+        physical_plan,
+        upstream_receivers,
+        downstream_count,
+    ));
+    
+    let processor_view = processor.start();
+    Ok(ProcessorNode {
+        processor,
+        processor_view,
+    })
 }
 
 /// Execute a complete processor pipeline

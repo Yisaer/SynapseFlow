@@ -17,14 +17,15 @@ use crate::processor::{StreamProcessor, ProcessorView, ProcessorHandle, utils, S
 pub struct DataSourceProcessor {
     /// The physical plan this processor corresponds to
     physical_plan: Arc<dyn PhysicalPlan>,
-    /// Input channels (should be empty for data source)
+    /// Input channels from children (upstream processors)
+    /// For DataSource, this is typically empty, but we support it for flexibility
     input_receivers: Vec<broadcast::Receiver<Result<StreamData, String>>>,
     /// Number of downstream processors this will broadcast to
     downstream_count: usize,
 }
 
 impl DataSourceProcessor {
-    /// Create a new DataSourceProcessor with specified downstream count
+    /// Create a new DataSourceProcessor with specified downstream count and upstream receivers
     pub fn new(
         physical_plan: Arc<dyn PhysicalPlan>,
         input_receivers: Vec<broadcast::Receiver<Result<StreamData, String>>>,
@@ -83,7 +84,8 @@ impl StreamProcessor for DataSourceProcessor {
 
 // Private helper methods
 impl DataSourceProcessor {
-    /// Create data source routine that runs in tokio task - currently just generates empty data
+    /// Create data source routine that runs in tokio task
+    /// Now handles both data generation and upstream input processing
     fn create_datasource_routine(
         &self,
         result_tx: broadcast::Sender<Result<StreamData, String>>,
@@ -91,9 +93,11 @@ impl DataSourceProcessor {
     ) -> impl std::future::Future<Output = ()> + Send + 'static {
         let downstream_count = self.downstream_count;
         let processor_name = "DataSourceProcessor".to_string();
+        let mut input_receivers = self.input_receivers();
         
         async move {
-            println!("DataSourceProcessor: Starting data source routine for {} downstream processors", downstream_count);
+            println!("DataSourceProcessor: Starting data source routine for {} downstream processors with {} upstream inputs", 
+                     downstream_count, input_receivers.len());
             
             // Send stream start signal
             if result_tx.send(Ok(StreamData::stream_start())).is_err() {
@@ -101,32 +105,76 @@ impl DataSourceProcessor {
                 return;
             }
             
-            // Generate initial data (currently empty)
-            match Self::static_generate_initial_data().await {
-                Ok(data_items) => {
-                    for data in data_items {
-                        // Check stop signal before sending each item
-                        if stop_rx.try_recv().is_ok() {
-                            println!("DataSourceProcessor: Received stop signal, shutting down");
-                            break;
-                        }
-                        
-                        if result_tx.send(Ok(StreamData::collection(data))).is_err() {
-                            // All downstream receivers dropped, stop processing
-                            println!("DataSourceProcessor: All downstream receivers dropped, stopping");
-                            break;
+            // If we have upstream inputs, process them (for future extensions)
+            // For now, DataSource typically doesn't have upstream, but we support it
+            if !input_receivers.is_empty() {
+                println!("DataSourceProcessor: Processing upstream inputs (unexpected for data source)");
+                // Process upstream data - this is unusual for a data source but supports flexibility
+                for receiver in &mut input_receivers {
+                    loop {
+                        tokio::select! {
+                            _ = stop_rx.recv() => {
+                                println!("DataSourceProcessor: Received stop signal while processing upstream");
+                                break;
+                            }
+                            result = receiver.recv() => {
+                                match result {
+                                    Ok(Ok(stream_data)) => {
+                                        // Pass through upstream data (unusual for data source)
+                                        if result_tx.send(Ok(stream_data)).is_err() {
+                                            println!("DataSourceProcessor: All downstream receivers dropped");
+                                            return;
+                                        }
+                                    }
+                                    Ok(Err(e)) => {
+                                        // Forward upstream error
+                                        let stream_error = StreamError::new(e)
+                                            .with_source("upstream")
+                                            .with_timestamp(std::time::SystemTime::now());
+                                        if result_tx.send(Ok(StreamData::error(stream_error))).is_err() {
+                                            return;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // Handle broadcast errors
+                                        let error_data = utils::handle_receive_error(e);
+                                        if result_tx.send(error_data).is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                Err(e) => {
-                    println!("DataSourceProcessor: Error generating data: {}", e);
-                    // Send error as StreamData::Error instead of stopping the flow
-                    let stream_error = StreamError::new(e)
-                        .with_source(&processor_name)
-                        .with_timestamp(std::time::SystemTime::now());
-                    
-                    if result_tx.send(Ok(StreamData::error(stream_error))).is_err() {
-                        println!("DataSourceProcessor: Failed to send error to downstream");
+            } else {
+                // Traditional data source behavior - generate data
+                match Self::static_generate_initial_data().await {
+                    Ok(data_items) => {
+                        for data in data_items {
+                            // Check stop signal before sending each item
+                            if stop_rx.try_recv().is_ok() {
+                                println!("DataSourceProcessor: Received stop signal, shutting down");
+                                break;
+                            }
+                            
+                            if result_tx.send(Ok(StreamData::collection(data))).is_err() {
+                                // All downstream receivers dropped, stop processing
+                                println!("DataSourceProcessor: All downstream receivers dropped, stopping");
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("DataSourceProcessor: Error generating data: {}", e);
+                        // Send error as StreamData::Error instead of stopping the flow
+                        let stream_error = StreamError::new(e)
+                            .with_source(&processor_name)
+                            .with_timestamp(std::time::SystemTime::now());
+                        
+                        if result_tx.send(Ok(StreamData::error(stream_error))).is_err() {
+                            println!("DataSourceProcessor: Failed to send error to downstream");
+                        }
                     }
                 }
             }
