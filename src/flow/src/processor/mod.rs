@@ -17,6 +17,8 @@ pub mod processor_view;
 pub mod stream_processor;
 pub mod pipeline_builder;
 pub mod processor_builder;
+pub mod control_source_processor;
+pub mod result_sink_processor;
 
 pub use stream_data::{StreamData, StreamError, ControlSignal};
 pub use datasource_processor::DataSourceProcessor;
@@ -24,5 +26,9 @@ pub use filter_processor::FilterProcessor;
 pub use project_processor::ProjectProcessor;
 pub use processor_view::{ProcessorView, ProcessorHandle};
 pub use stream_processor::{StreamProcessor, utils};
-pub use pipeline_builder::{build_processor_pipeline, execute_pipeline, ProcessorNode};
+pub use pipeline_builder::{build_processor_pipeline, build_processor_pipeline_with_endpoints, 
+                          build_pipeline_with_external_control, build_pipeline_with_external_io, execute_pipeline,
+                          PipelineEndpoints, ExternalPipeline, PipelineStats};
 pub use processor_builder::{ProcessorBuilder, ProcessorBuildResult};
+pub use control_source_processor::ControlSourceProcessor;
+pub use result_sink_processor::ResultSinkProcessor;

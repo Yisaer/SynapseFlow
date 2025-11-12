@@ -3,22 +3,23 @@
 //! Defines the core StreamProcessor interface and shared utilities for all processors.
 
 use tokio::sync::broadcast;
-use std::sync::Arc;
-use crate::planner::physical::PhysicalPlan;
 use crate::processor::stream_data::{StreamData, ControlSignal, StreamError};
 use crate::processor::ProcessorView;
 
 /// Core trait for all stream processors
 /// 
-/// Each processor corresponds to a PhysicalPlan and runs in its own tokio task.
-/// Processors handle data flow from multiple upstream sources and broadcast to multiple downstream sinks.
+/// Processors run in their own tokio task and handle data flow through broadcast channels.
+/// They can receive data from multiple upstream sources and broadcast to multiple downstream sinks.
 /// 
 /// Design pattern:
-/// 1. Constructor takes physical plan and input receivers
+/// 1. Constructor takes configuration and input receivers
 /// 2. `start()` method spawns tokio task and returns ProcessorView
 /// 3. Each processor implements data processing routine with tokio::select!
 /// 4. Supports graceful shutdown via broadcast channels
 /// 5. Handles multiple input sources and output broadcasting
+/// 
+/// Note: This trait is designed to work with both PhysicalPlan-based processors
+/// and special-purpose processors like ControlSourceProcessor and ResultSinkProcessor
 pub trait StreamProcessor: Send + Sync {
     /// Start the processor and return a view for control and output
     /// 
@@ -27,9 +28,6 @@ pub trait StreamProcessor: Send + Sync {
     /// 2. Spawn a tokio task for the processor routine
     /// 3. Return a ProcessorView for external control and data consumption
     fn start(&self) -> ProcessorView;
-    
-    /// Get the physical plan this processor corresponds to
-    fn get_physical_plan(&self) -> &Arc<dyn PhysicalPlan>;
     
     /// Get the number of downstream processors this will broadcast to
     /// This is determined at construction time and used for channel capacity planning

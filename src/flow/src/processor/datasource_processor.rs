@@ -15,7 +15,7 @@ use crate::processor::{StreamProcessor, ProcessorView, ProcessorHandle, utils, S
 /// This is typically the starting point of a stream processing pipeline.
 /// Currently just generates empty data to establish data flow.
 pub struct DataSourceProcessor {
-    /// The physical plan this processor corresponds to
+    /// The physical plan this processor corresponds to (kept for compatibility but not used in processing)
     physical_plan: Arc<dyn PhysicalPlan>,
     /// Input channels from children (upstream processors)
     /// For DataSource, this is typically empty, but we support it for flexibility
@@ -37,16 +37,6 @@ impl DataSourceProcessor {
             downstream_count,
         }
     }
-    
-    /// Generate initial data (currently empty for pipeline establishment)
-    async fn generate_initial_data(&self) -> Result<Vec<Box<dyn crate::model::Collection>>, String> {
-        // For now, return empty data to establish pipeline
-        // In a real implementation, this would:
-        // 1. Connect to the actual data source (Kafka, file, etc.)
-        // 2. Read and parse data
-        // 3. Return StreamData items
-        Ok(vec![])
-    }
 }
 
 impl StreamProcessor for DataSourceProcessor {
@@ -65,10 +55,6 @@ impl StreamProcessor for DataSourceProcessor {
             stop_tx,
             ProcessorHandle::new(join_handle),
         )
-    }
-    
-    fn get_physical_plan(&self) -> &Arc<dyn PhysicalPlan> {
-        &self.physical_plan
     }
     
     fn downstream_count(&self) -> usize {
@@ -127,7 +113,7 @@ impl DataSourceProcessor {
                                         }
                                     }
                                     Err(e) => {
-                                        // Handle broadcast errors
+                                        // Handle broadcast errors from upstream
                                         let error_data = utils::handle_receive_error(e);
                                         if result_tx.send(error_data).is_err() {
                                             return;
@@ -140,32 +126,21 @@ impl DataSourceProcessor {
                 }
             } else {
                 // Traditional data source behavior - generate data
-                match Self::static_generate_initial_data().await {
-                    Ok(data_items) => {
-                        for data in data_items {
-                            // Check stop signal before sending each item
-                            if stop_rx.try_recv().is_ok() {
-                                println!("DataSourceProcessor: Received stop signal, shutting down");
-                                break;
-                            }
-                            
-                            if result_tx.send(StreamData::collection(data)).is_err() {
-                                // All downstream receivers dropped, stop processing
-                                println!("DataSourceProcessor: All downstream receivers dropped, stopping");
-                                break;
-                            }
-                        }
+                // For now, return empty data to establish pipeline
+                // In a real implementation, this would generate actual data
+                let data_items: Vec<Box<dyn crate::model::Collection>> = vec![];
+                
+                for data in data_items {
+                    // Check stop signal before sending each item
+                    if stop_rx.try_recv().is_ok() {
+                        println!("DataSourceProcessor: Received stop signal, shutting down");
+                        break;
                     }
-                    Err(e) => {
-                        println!("DataSourceProcessor: Error generating data: {}", e);
-                        // Send error as StreamData::Error instead of stopping the flow
-                        let stream_error = StreamError::new(e)
-                            .with_source(&processor_name)
-                            .with_timestamp(std::time::SystemTime::now());
-                        
-                        if result_tx.send(StreamData::error(stream_error)).is_err() {
-                            println!("DataSourceProcessor: Failed to send error to downstream");
-                        }
+                    
+                    if result_tx.send(StreamData::collection(data)).is_err() {
+                        // All downstream receivers dropped, stop processing
+                        println!("DataSourceProcessor: All downstream receivers dropped, stopping");
+                        break;
                     }
                 }
             }
@@ -177,12 +152,5 @@ impl DataSourceProcessor {
             
             println!("DataSourceProcessor: Data source routine completed");
         }
-    }
-    
-    /// Static version of generate_initial_data for use in async routine
-    async fn static_generate_initial_data() -> Result<Vec<Box<dyn crate::model::Collection>>, String> {
-        // For now, return empty data to establish pipeline
-        // In a real implementation, this would generate actual data
-        Ok(vec![])
     }
 }

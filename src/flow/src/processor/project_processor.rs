@@ -63,10 +63,6 @@ impl StreamProcessor for ProjectProcessor {
         )
     }
     
-    fn get_physical_plan(&self) -> &Arc<dyn PhysicalPlan> {
-        &self.physical_plan
-    }
-    
     fn downstream_count(&self) -> usize {
         self.downstream_count
     }
