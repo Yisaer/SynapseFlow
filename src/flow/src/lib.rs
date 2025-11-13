@@ -6,11 +6,13 @@ pub mod planner;
 pub mod processor;
 
 pub use datatypes::Schema;
+#[cfg(feature = "datafusion")]
+pub use expr::datafusion_func::create_df_function_call;
 pub use expr::sql_conversion;
 pub use expr::{
-    convert_expr_to_scalar, convert_select_stmt_to_scalar, create_df_function_call,
-    extract_select_expressions, BinaryFunc, ConcatFunc, ConversionError, DataFusionEvaluator,
-    EvalContext, ScalarExpr, StreamSqlConverter, UnaryFunc,
+    convert_expr_to_scalar, convert_select_stmt_to_scalar, extract_select_expressions, BinaryFunc,
+    ConcatFunc, ConversionError, DataFusionEvaluator, EvalContext, ScalarExpr, StreamSqlConverter,
+    UnaryFunc,
 };
 pub use model::{Collection, RecordBatch};
 pub use planner::create_physical_plan;

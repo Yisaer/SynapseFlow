@@ -1,18 +1,26 @@
 //! DataFusion-based expression evaluator for flow tuples
 
+use crate::model::Collection;
+use datatypes::Value;
+
+#[cfg(feature = "datafusion")]
 use datafusion::execution::context::SessionContext;
+#[cfg(feature = "datafusion")]
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue, ToDFSchema};
+#[cfg(feature = "datafusion")]
 use datafusion_expr::{lit, ColumnarValue, Expr};
-use datatypes::{ConcreteDatatype, ListValue, Value};
+#[cfg(feature = "datafusion")]
+use datatypes::{ConcreteDatatype, ListValue};
+#[cfg(feature = "datafusion")]
 use std::sync::Arc;
 
-use crate::model::Collection;
-
 /// DataFusion-based expression evaluator
+#[cfg(feature = "datafusion")]
 pub struct DataFusionEvaluator {
     session_ctx: SessionContext,
 }
 
+#[cfg(feature = "datafusion")]
 impl DataFusionEvaluator {
     /// Create a new DataFusion evaluator
     pub fn new() -> Self {
@@ -88,6 +96,7 @@ impl DataFusionEvaluator {
     }
 
     /// Convert DataFusion ColumnarValue to flow Value
+    #[cfg(feature = "datafusion")]
     fn convert_columnar_value_to_flow_value(
         &self,
         result: ColumnarValue,
@@ -123,6 +132,7 @@ impl DataFusionEvaluator {
     }
 
     /// Convert a single array element to flow Value
+    #[cfg(feature = "datafusion")]
     fn array_element_to_value(
         &self,
         array: &arrow::array::ArrayRef,
@@ -198,6 +208,7 @@ impl DataFusionEvaluator {
     }
 
     /// Create a minimal single-row collection for DataFusion evaluation
+    #[cfg(feature = "datafusion")]
     fn create_single_row_collection(&self) -> DataFusionResult<arrow::record_batch::RecordBatch> {
         // Create a minimal RecordBatch with a single dummy column
         let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
@@ -216,6 +227,7 @@ impl DataFusionEvaluator {
     }
 }
 
+#[cfg(feature = "datafusion")]
 impl Default for DataFusionEvaluator {
     fn default() -> Self {
         Self::new()
@@ -223,6 +235,7 @@ impl Default for DataFusionEvaluator {
 }
 
 #[cfg(test)]
+#[cfg(feature = "datafusion")]
 mod tests {
     use super::*;
     use crate::model::{Column, RecordBatch};
@@ -314,6 +327,7 @@ mod tests {
 }
 
 /// Convert flow Value to DataFusion ScalarValue
+#[cfg(feature = "datafusion")]
 fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
     match value {
         Value::Null => Err(DataFusionError::NotImplemented(
@@ -341,6 +355,7 @@ fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
 }
 
 /// Convert DataFusion ScalarValue to flow Value
+#[cfg(feature = "datafusion")]
 fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
     match scalar {
         ScalarValue::Int8(None)
@@ -375,6 +390,7 @@ fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
 }
 
 /// Create a DataFusion function call by name
+#[cfg(feature = "datafusion")]
 fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFusionResult<Expr> {
     match function_name.as_str() {
         "concat" => {
@@ -425,6 +441,7 @@ fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFusion
 }
 
 /// Convert Arrow DataType to ConcreteDatatype
+#[cfg(feature = "datafusion")]
 fn arrow_type_to_concrete_datatype(
     arrow_type: &arrow::datatypes::DataType,
 ) -> DataFusionResult<ConcreteDatatype> {
@@ -451,3 +468,56 @@ fn arrow_type_to_concrete_datatype(
         ))),
     }
 }
+
+#[cfg(not(feature = "datafusion"))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DataFusionEvaluator;
+
+#[cfg(not(feature = "datafusion"))]
+impl DataFusionEvaluator {
+    /// Stub constructor available when the `datafusion` feature is disabled.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Always returns an error explaining that DataFusion support is disabled.
+    pub fn evaluate_df_function_vectorized(
+        &self,
+        function_name: &str,
+        _args: &[Vec<Value>],
+        _collection: &dyn Collection,
+    ) -> DataFusionResult<Vec<Value>> {
+        Err(DataFusionError::feature_disabled(function_name))
+    }
+}
+
+#[cfg(not(feature = "datafusion"))]
+#[derive(Debug, Clone)]
+pub struct DataFusionError {
+    message: String,
+}
+
+#[cfg(not(feature = "datafusion"))]
+impl DataFusionError {
+    fn feature_disabled(function_name: &str) -> Self {
+        Self {
+            message: format!(
+                "Function '{}' requires enabling the 'datafusion' feature",
+                function_name
+            ),
+        }
+    }
+}
+
+#[cfg(not(feature = "datafusion"))]
+impl std::fmt::Display for DataFusionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+#[cfg(not(feature = "datafusion"))]
+impl std::error::Error for DataFusionError {}
+
+#[cfg(not(feature = "datafusion"))]
+pub type DataFusionResult<T> = Result<T, DataFusionError>;

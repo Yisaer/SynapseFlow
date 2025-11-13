@@ -184,6 +184,7 @@ impl ScalarExpr {
                     })
                     .collect()
             }
+            #[cfg(feature = "datafusion")]
             ScalarExpr::CallDf {
                 function_name,
                 args,
@@ -217,6 +218,13 @@ impl ScalarExpr {
                         message: df_error.to_string(),
                     })
             }
+            #[cfg(not(feature = "datafusion"))]
+            ScalarExpr::CallDf { function_name, .. } => Err(EvalError::DataFusionError {
+                message: format!(
+                    "Function '{}' requires enabling the 'datafusion' feature",
+                    function_name
+                ),
+            }),
             ScalarExpr::CallFunc { func, args } => {
                 // Vectorized custom function evaluation
                 // Prepare arguments as vectors (one vector per argument, containing all rows)

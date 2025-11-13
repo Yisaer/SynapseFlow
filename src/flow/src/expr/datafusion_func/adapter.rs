@@ -1,8 +1,12 @@
 //! DataFusion adapter for converting between flow types and DataFusion types
 
+#[cfg(feature = "datafusion")]
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+#[cfg(feature = "datafusion")]
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+#[cfg(feature = "datafusion")]
 use datafusion_expr::Expr;
+#[cfg(feature = "datafusion")]
 use datatypes::{ConcreteDatatype, Schema as FlowSchema, Value};
 
 /// List of functions that can be called through CallDf (DataFusion functions)
@@ -25,6 +29,7 @@ pub const CUSTOM_FUNCTIONS: &[&str] = &[
 ];
 
 /// Convert flow Value to DataFusion ScalarValue
+#[cfg(feature = "datafusion")]
 pub fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
     match value {
         Value::Null => Err(DataFusionError::NotImplemented(
@@ -52,6 +57,7 @@ pub fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
 }
 
 /// Convert DataFusion ScalarValue to flow Value
+#[cfg(feature = "datafusion")]
 pub fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
     match scalar {
         ScalarValue::Int8(None)
@@ -86,6 +92,7 @@ pub fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
 }
 
 /// Convert ConcreteDatatype to Arrow DataType
+#[cfg(feature = "datafusion")]
 pub fn concrete_datatype_to_arrow_type(dt: &ConcreteDatatype) -> DataFusionResult<DataType> {
     match dt {
         ConcreteDatatype::Null => Ok(DataType::Null),
@@ -111,6 +118,7 @@ pub fn concrete_datatype_to_arrow_type(dt: &ConcreteDatatype) -> DataFusionResul
 }
 
 /// Convert flow Schema to Arrow Schema
+#[cfg(feature = "datafusion")]
 pub fn flow_schema_to_arrow_schema(flow_schema: &FlowSchema) -> DataFusionResult<ArrowSchema> {
     let fields: DataFusionResult<Vec<Field>> = flow_schema
         .column_schemas()
@@ -125,6 +133,7 @@ pub fn flow_schema_to_arrow_schema(flow_schema: &FlowSchema) -> DataFusionResult
 }
 
 /// Create a DataFusion function call by name
+#[cfg(feature = "datafusion")]
 pub fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFusionResult<Expr> {
     // Check if the function is in the allowed DataFusion functions list
     if !DATAFUSION_FUNCTIONS.contains(&function_name.as_str()) {
@@ -182,12 +191,14 @@ pub fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFu
 }
 
 /// Error types for DataFusion adapter
+#[cfg(feature = "datafusion")]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdapterError {
     DataFusionError(String),
     TypeConversionError(String),
 }
 
+#[cfg(feature = "datafusion")]
 impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -197,8 +208,10 @@ impl std::fmt::Display for AdapterError {
     }
 }
 
+#[cfg(feature = "datafusion")]
 impl std::error::Error for AdapterError {}
 
+#[cfg(feature = "datafusion")]
 impl From<DataFusionError> for AdapterError {
     fn from(error: DataFusionError) -> Self {
         AdapterError::DataFusionError(error.to_string())
@@ -206,6 +219,7 @@ impl From<DataFusionError> for AdapterError {
 }
 
 #[cfg(test)]
+#[cfg(feature = "datafusion")]
 mod tests {
     use super::*;
 

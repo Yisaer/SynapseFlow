@@ -293,7 +293,19 @@ fn convert_function_call(
     let function_name = name.to_string();
 
     // Validate function name against allowed lists
+    #[cfg(feature = "datafusion")]
     let is_df_function = DATAFUSION_FUNCTIONS.contains(&function_name.as_str());
+    #[cfg(not(feature = "datafusion"))]
+    let is_df_function = false;
+
+    #[cfg(not(feature = "datafusion"))]
+    if DATAFUSION_FUNCTIONS.contains(&function_name.as_str()) {
+        return Err(ConversionError::UnsupportedExpression(format!(
+            "Function '{}' requires enabling the 'datafusion' feature",
+            function_name
+        )));
+    }
+
     let is_custom_function = CUSTOM_FUNCTIONS.contains(&function_name.as_str());
 
     if !is_df_function && !is_custom_function {
