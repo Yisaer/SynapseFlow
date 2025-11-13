@@ -1,4 +1,7 @@
-use crate::types::{BooleanType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, ListType, StringType, StructType, Uint8Type, Uint16Type, Uint32Type, Uint64Type};
+use crate::types::{
+    BooleanType, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, ListType,
+    StringType, StructType, Uint16Type, Uint32Type, Uint64Type, Uint8Type,
+};
 use crate::value::Value;
 
 /// Data type abstraction trait

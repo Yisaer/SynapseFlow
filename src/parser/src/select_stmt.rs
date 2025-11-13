@@ -48,8 +48,8 @@ impl SelectStmt {
 
     /// Create a new SelectStmt with given fields and no WHERE/HAVING clauses
     pub fn with_fields(select_fields: Vec<SelectField>) -> Self {
-        Self { 
-            select_fields, 
+        Self {
+            select_fields,
             where_condition: None,
             having: None,
             aggregate_mappings: HashMap::new(),
@@ -58,9 +58,13 @@ impl SelectStmt {
     }
 
     /// Create a new SelectStmt with given fields and WHERE/HAVING clauses
-    pub fn with_fields_and_conditions(select_fields: Vec<SelectField>, where_condition: Option<Expr>, having: Option<Expr>) -> Self {
-        Self { 
-            select_fields, 
+    pub fn with_fields_and_conditions(
+        select_fields: Vec<SelectField>,
+        where_condition: Option<Expr>,
+        having: Option<Expr>,
+    ) -> Self {
+        Self {
+            select_fields,
             where_condition,
             having,
             aggregate_mappings: HashMap::new(),

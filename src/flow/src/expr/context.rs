@@ -16,17 +16,17 @@ impl EvalContext {
     }
 
     /// Insert a value into the context with the given key
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The string key to store the value under
     /// * `value` - The value to store (must be Send + Sync + 'static)
-    /// 
+    ///
     /// # Examples
-    /// 
+    ///
     /// ```
     /// use flow::expr::context::EvalContext;
-    /// 
+    ///
     /// let mut ctx = EvalContext::new();
     /// ctx.set("user_id", 42i64);
     /// ctx.set("session_id", "abc123".to_string());
@@ -36,24 +36,24 @@ impl EvalContext {
     }
 
     /// Get a value from the context by key
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The string key to retrieve the value for
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Some(&T)` if the key exists and the value is of type `T`,
     /// `None` otherwise.
-    /// 
+    ///
     /// # Examples
-    /// 
+    ///
     /// ```
     /// use flow::expr::context::EvalContext;
-    /// 
+    ///
     /// let mut ctx = EvalContext::new();
     /// ctx.set("user_id", 42i64);
-    /// 
+    ///
     /// if let Some(user_id) = ctx.get::<i64>("user_id") {
     ///     println!("User ID: {}", user_id);
     /// }
@@ -63,13 +63,13 @@ impl EvalContext {
     }
 
     /// Get a mutable reference to a value from the context by key
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The string key to retrieve the value for
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Some(&mut T)` if the key exists and the value is of type `T`,
     /// `None` otherwise.
     pub fn get_mut<T: 'static>(&mut self, key: &str) -> Option<&mut T> {
@@ -77,13 +77,13 @@ impl EvalContext {
     }
 
     /// Remove a value from the context by key
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The string key to remove
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Some(T)` if the key existed and the value was of type `T`,
     /// `None` otherwise.
     pub fn remove<T: 'static>(&mut self, key: &str) -> Option<T> {
@@ -91,13 +91,13 @@ impl EvalContext {
     }
 
     /// Check if the context contains a key
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The string key to check
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `true` if the key exists, `false` otherwise.
     pub fn contains_key(&self, key: &str) -> bool {
         self.data.contains_key(key)

@@ -1,9 +1,9 @@
 //! Table information visitor for parser module
 //! Uses sqlparser's visitor pattern to extract table information from SQL statements
 
-use sqlparser::ast::{Visitor, TableFactor};
-use std::ops::ControlFlow;
 use crate::select_stmt::SourceInfo;
+use sqlparser::ast::{TableFactor, Visitor};
+use std::ops::ControlFlow;
 
 /// Visitor that collects table (source) information from SQL statements
 pub struct TableInfoVisitor {
@@ -32,7 +32,7 @@ impl Visitor for TableInfoVisitor {
             TableFactor::Table { name, alias, .. } => {
                 let table_name = name.to_string();
                 let alias_name = alias.as_ref().map(|a| a.name.value.clone());
-                
+
                 self.sources.push(SourceInfo {
                     name: table_name,
                     alias: alias_name,
@@ -43,7 +43,7 @@ impl Visitor for TableInfoVisitor {
                 // Could be extended in the future
             }
         }
-        
+
         ControlFlow::Continue(())
     }
 }
@@ -57,49 +57,49 @@ impl Default for TableInfoVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::parser::Parser;
     use crate::dialect::StreamDialect;
     use sqlparser::ast::Visit;
+    use sqlparser::parser::Parser;
 
     #[test]
     fn test_extract_single_table() {
         let sql = "SELECT * FROM users";
         let dialect = StreamDialect::new();
         let ast = Parser::parse_sql(&dialect, sql).unwrap();
-        
+
         let mut visitor = TableInfoVisitor::new();
         let _ = ast[0].visit(&mut visitor);
-        
+
         let sources = visitor.get_sources();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name, "users");
         assert_eq!(sources[0].alias, None);
     }
-    
+
     #[test]
     fn test_extract_table_with_alias() {
         let sql = "SELECT * FROM users AS u";
         let dialect = StreamDialect::new();
         let ast = Parser::parse_sql(&dialect, sql).unwrap();
-        
+
         let mut visitor = TableInfoVisitor::new();
         let _ = ast[0].visit(&mut visitor);
-        
+
         let sources = visitor.get_sources();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name, "users");
         assert_eq!(sources[0].alias, Some("u".to_string()));
     }
-    
+
     #[test]
     fn test_extract_multiple_tables() {
         let sql = "SELECT * FROM users AS u, orders AS o";
         let dialect = StreamDialect::new();
         let ast = Parser::parse_sql(&dialect, sql).unwrap();
-        
+
         let mut visitor = TableInfoVisitor::new();
         let _ = ast[0].visit(&mut visitor);
-        
+
         let sources = visitor.get_sources();
         assert_eq!(sources.len(), 2);
         assert_eq!(sources[0].name, "users");

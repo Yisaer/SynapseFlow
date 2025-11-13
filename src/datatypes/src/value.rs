@@ -111,7 +111,7 @@ impl Value {
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
-    
+
     /// Get the datatype of this value
     pub fn datatype(&self) -> ConcreteDatatype {
         match self {
@@ -129,7 +129,9 @@ impl Value {
             Value::String(_) => ConcreteDatatype::String(crate::types::StringType),
             Value::Bool(_) => ConcreteDatatype::Bool(crate::types::BooleanType),
             Value::Struct(s) => ConcreteDatatype::Struct(s.fields().clone()),
-            Value::List(l) => ConcreteDatatype::List(crate::types::ListType::new(Arc::new(l.datatype().clone()))),
+            Value::List(l) => {
+                ConcreteDatatype::List(crate::types::ListType::new(Arc::new(l.datatype().clone())))
+            }
         }
     }
 }

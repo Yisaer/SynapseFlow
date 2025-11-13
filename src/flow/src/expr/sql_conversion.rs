@@ -1,10 +1,8 @@
+use super::custom_func::CUSTOM_FUNCTIONS;
+use super::datafusion_func::adapter::DATAFUSION_FUNCTIONS;
 use super::func::{BinaryFunc, UnaryFunc};
 use super::scalar::ScalarExpr;
-use super::datafusion_func::adapter::DATAFUSION_FUNCTIONS;
-use super::custom_func::CUSTOM_FUNCTIONS;
-use datatypes::{
-    BooleanType, ConcreteDatatype, Float64Type, Int64Type, StringType, Value,
-};
+use datatypes::{BooleanType, ConcreteDatatype, Float64Type, Int64Type, StringType, Value};
 use sqlparser::ast::{
     BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, Ident, UnaryOperator,
     Value as SqlValue,
@@ -152,9 +150,7 @@ pub fn convert_expr_to_scalar(expr: &Expr) -> Result<ScalarExpr, ConversionError
         }
 
         // Function calls like CONCAT(a, b), UPPER(name)
-        Expr::Function(Function { name, args, .. }) => {
-            convert_function_call(name, args)
-        }
+        Expr::Function(Function { name, args, .. }) => convert_function_call(name, args),
 
         // Parenthesized expressions like (a + b)
         Expr::Nested(inner_expr) => convert_expr_to_scalar(inner_expr),
@@ -168,9 +164,11 @@ pub fn convert_expr_to_scalar(expr: &Expr) -> Result<ScalarExpr, ConversionError
         } => convert_between_expression(expr, low, high, *negated),
 
         // IN expressions like a IN (1, 2, 3)
-        Expr::InList { expr, list, negated } => {
-            convert_in_list_expression(expr, list, *negated)
-        }
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => convert_in_list_expression(expr, list, *negated),
 
         // CASE expressions
         Expr::Case {
@@ -181,23 +179,24 @@ pub fn convert_expr_to_scalar(expr: &Expr) -> Result<ScalarExpr, ConversionError
         } => convert_case_expression(operand, conditions, results, else_result),
 
         // Struct field access like a->b
-        Expr::JsonAccess { left, operator, right } => {
-            convert_json_access(left, operator, right)
-        }
+        Expr::JsonAccess {
+            left,
+            operator,
+            right,
+        } => convert_json_access(left, operator, right),
 
         // List indexing like a[0]
-        Expr::MapAccess { column, keys } => {
-            convert_map_access(column, keys)
-        }
+        Expr::MapAccess { column, keys } => convert_map_access(column, keys),
 
-        _ => Err(ConversionError::UnsupportedExpression(format!("{:?}", expr))),
+        _ => Err(ConversionError::UnsupportedExpression(format!(
+            "{:?}",
+            expr
+        ))),
     }
 }
 
 /// Convert simple Identifier to Column reference
-fn convert_identifier_to_column(
-    ident: &Ident,
-) -> Result<ScalarExpr, ConversionError> {
+fn convert_identifier_to_column(ident: &Ident) -> Result<ScalarExpr, ConversionError> {
     let column_name = &ident.value;
     Ok(ScalarExpr::column("", column_name))
 }
@@ -206,9 +205,7 @@ fn convert_identifier_to_column(
 /// Only handles cases 1 and 2 as specified:
 /// - Case 1: simple identifier (already handled by convert_identifier_to_column)
 /// - Case 2: table.column format where we use both source_name and column_name
-fn convert_compound_identifier_to_column(
-    idents: &[Ident],
-) -> Result<ScalarExpr, ConversionError> {
+fn convert_compound_identifier_to_column(idents: &[Ident]) -> Result<ScalarExpr, ConversionError> {
     match idents.len() {
         1 => {
             // Simple identifier case - delegate to existing function
@@ -254,15 +251,15 @@ fn convert_json_access(
             // Use the proper FieldAccess variant instead of CallDf
             Ok(ScalarExpr::field_access(struct_expr, field_name))
         }
-        _ => Err(ConversionError::UnsupportedOperator(format!("{:?}", operator))),
+        _ => Err(ConversionError::UnsupportedOperator(format!(
+            "{:?}",
+            operator
+        ))),
     }
 }
 
 /// Convert MapAccess (list indexing like a[0]) to ScalarExpr
-fn convert_map_access(
-    column: &Expr,
-    keys: &[Expr],
-) -> Result<ScalarExpr, ConversionError> {
+fn convert_map_access(column: &Expr, keys: &[Expr]) -> Result<ScalarExpr, ConversionError> {
     if keys.is_empty() {
         return Err(ConversionError::UnsupportedExpression(
             "MapAccess requires at least one key".to_string(),
@@ -292,20 +289,32 @@ fn convert_function_call(
 ) -> Result<ScalarExpr, ConversionError> {
     use crate::expr::custom_func::ConcatFunc;
     use std::sync::Arc;
-    
+
     let function_name = name.to_string();
-    
+
     // Validate function name against allowed lists
+    #[cfg(feature = "datafusion")]
     let is_df_function = DATAFUSION_FUNCTIONS.contains(&function_name.as_str());
+    #[cfg(not(feature = "datafusion"))]
+    let is_df_function = false;
+
+    #[cfg(not(feature = "datafusion"))]
+    if DATAFUSION_FUNCTIONS.contains(&function_name.as_str()) {
+        return Err(ConversionError::UnsupportedExpression(format!(
+            "Function '{}' requires enabling the 'datafusion' feature",
+            function_name
+        )));
+    }
+
     let is_custom_function = CUSTOM_FUNCTIONS.contains(&function_name.as_str());
-    
+
     if !is_df_function && !is_custom_function {
         return Err(ConversionError::UnsupportedExpression(format!(
             "Unknown function: '{}'. Available DataFusion functions: {:?}. Available custom functions: {:?}",
             function_name, DATAFUSION_FUNCTIONS, CUSTOM_FUNCTIONS
         )));
     }
-    
+
     let mut scalar_args = Vec::new();
 
     for arg in args {
@@ -326,26 +335,27 @@ fn convert_function_call(
             }
         }
     }
-    
+
     // If function is in CUSTOM_FUNCTIONS, use CallFunc
     if is_custom_function {
         // Create the appropriate custom function based on name
-        let custom_func: Arc<dyn crate::expr::custom_func::CustomFunc> = match function_name.as_str() {
-            "concat" => Arc::new(ConcatFunc),
-            _ => {
-                return Err(ConversionError::UnsupportedExpression(format!(
-                    "Function '{}' is in CUSTOM_FUNCTIONS but not implemented",
-                    function_name
-                )));
-            }
-        };
-        
+        let custom_func: Arc<dyn crate::expr::custom_func::CustomFunc> =
+            match function_name.as_str() {
+                "concat" => Arc::new(ConcatFunc),
+                _ => {
+                    return Err(ConversionError::UnsupportedExpression(format!(
+                        "Function '{}' is in CUSTOM_FUNCTIONS but not implemented",
+                        function_name
+                    )));
+                }
+            };
+
         return Ok(ScalarExpr::CallFunc {
             func: custom_func,
             args: scalar_args,
         });
     }
-    
+
     // Otherwise, use CallDf for DataFusion functions
     Ok(ScalarExpr::CallDf {
         function_name,
@@ -450,10 +460,7 @@ fn convert_case_expression(
     let mut current_expr = if let Some(else_expr) = else_result {
         convert_expr_to_scalar(else_expr)?
     } else {
-        ScalarExpr::Literal(
-            Value::Null,
-            ConcreteDatatype::Int64(Int64Type),
-        )
+        ScalarExpr::Literal(Value::Null, ConcreteDatatype::Int64(Int64Type))
     };
 
     // Process conditions in reverse order
@@ -489,9 +496,7 @@ fn convert_case_expression(
 }
 
 /// Extract expressions from SQL SELECT statement
-pub fn extract_select_expressions(
-    sql: &str,
-) -> Result<Vec<ScalarExpr>, ConversionError> {
+pub fn extract_select_expressions(sql: &str) -> Result<Vec<ScalarExpr>, ConversionError> {
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
 
@@ -583,5 +588,3 @@ impl Default for StreamSqlConverter {
         Self::new()
     }
 }
-
-

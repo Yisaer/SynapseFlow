@@ -1,6 +1,6 @@
+use crate::expr::custom_func::CustomFunc;
 use crate::expr::func::EvalError;
 use datatypes::Value;
-use crate::expr::custom_func::CustomFunc;
 
 /// Custom implementation of the concat function
 /// This function concatenates exactly 2 String arguments
@@ -30,7 +30,11 @@ impl CustomFunc for ConcatFunc {
         let num_rows = args[0].len();
         if args[1].len() != num_rows {
             return Err(EvalError::NotImplemented {
-                feature: format!("Argument vector length mismatch: {} vs {}", args[0].len(), args[1].len())
+                feature: format!(
+                    "Argument vector length mismatch: {} vs {}",
+                    args[0].len(),
+                    args[1].len()
+                ),
             });
         }
 

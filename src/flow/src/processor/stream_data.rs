@@ -1,5 +1,5 @@
 //! Stream data types for processor communication
-//! 
+//!
 //! Defines the data types that flow between processors in the stream processing pipeline.
 
 use crate::model::Collection;
@@ -48,13 +48,13 @@ impl StreamError {
             timestamp: None,
         }
     }
-    
+
     /// Create a new stream error with source processor
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
         self
     }
-    
+
     /// Create a new stream error with timestamp
     pub fn with_timestamp(mut self, timestamp: std::time::SystemTime) -> Self {
         self.timestamp = Some(timestamp);
@@ -82,42 +82,42 @@ impl StreamData {
     pub fn collection(collection: Box<dyn Collection>) -> Self {
         StreamData::Collection(collection)
     }
-    
+
     /// Create control signal
     pub fn control(signal: ControlSignal) -> Self {
         StreamData::Control(signal)
     }
-    
+
     /// Create error data
     pub fn error(error: StreamError) -> Self {
         StreamData::Error(error)
     }
-    
+
     /// Create error from string message
     pub fn error_message(message: impl Into<String>) -> Self {
         StreamData::Error(StreamError::new(message))
     }
-    
+
     /// Check if this is data (Collection)
     pub fn is_data(&self) -> bool {
         matches!(self, StreamData::Collection(_))
     }
-    
+
     /// Check if this is a control signal
     pub fn is_control(&self) -> bool {
         matches!(self, StreamData::Control(_))
     }
-    
+
     /// Check if this is an error
     pub fn is_error(&self) -> bool {
         matches!(self, StreamData::Error(_))
     }
-    
+
     /// Check if this is a terminal signal (StreamEnd)
     pub fn is_terminal(&self) -> bool {
         matches!(self, StreamData::Control(ControlSignal::StreamEnd))
     }
-    
+
     /// Extract Collection if present
     pub fn as_collection(&self) -> Option<&dyn Collection> {
         match self {
@@ -125,7 +125,7 @@ impl StreamData {
             _ => None,
         }
     }
-    
+
     /// Extract control signal if present
     pub fn as_control(&self) -> Option<&ControlSignal> {
         match self {
@@ -133,7 +133,7 @@ impl StreamData {
             _ => None,
         }
     }
-    
+
     /// Extract error if present
     pub fn as_error(&self) -> Option<&StreamError> {
         match self {
@@ -141,7 +141,7 @@ impl StreamData {
             _ => None,
         }
     }
-    
+
     /// Get a human-readable description
     pub fn description(&self) -> String {
         match self {
@@ -160,17 +160,17 @@ impl StreamData {
     pub fn stream_end() -> Self {
         StreamData::control(ControlSignal::StreamEnd)
     }
-    
+
     /// Create resume signal
     pub fn resume() -> Self {
         StreamData::control(ControlSignal::Resume)
     }
-    
+
     /// Create flush signal
     pub fn flush() -> Self {
         StreamData::control(ControlSignal::Flush)
     }
-    
+
     /// Create watermark signal
     pub fn watermark(time: std::time::SystemTime) -> Self {
         StreamData::control(ControlSignal::Watermark(time))

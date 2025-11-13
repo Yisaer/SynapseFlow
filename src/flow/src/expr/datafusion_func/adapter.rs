@@ -1,26 +1,39 @@
 //! DataFusion adapter for converting between flow types and DataFusion types
 
+#[cfg(feature = "datafusion")]
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+#[cfg(feature = "datafusion")]
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+#[cfg(feature = "datafusion")]
 use datafusion_expr::Expr;
-use datatypes::{ConcreteDatatype, Value, Schema as FlowSchema};
+#[cfg(feature = "datafusion")]
+use datatypes::{ConcreteDatatype, Schema as FlowSchema, Value};
 
 /// List of functions that can be called through CallDf (DataFusion functions)
 pub const DATAFUSION_FUNCTIONS: &[&str] = &[
-    "concat", "upper", "lower", "trim", "length", "substr", "substring", 
-    "round", "abs", "sqrt"
+    "concat",
+    "upper",
+    "lower",
+    "trim",
+    "length",
+    "substr",
+    "substring",
+    "round",
+    "abs",
+    "sqrt",
 ];
 
 /// List of functions that can be called through CallFunc (custom functions)
 pub const CUSTOM_FUNCTIONS: &[&str] = &[
-    "concat",  // Note: concat is supported both as DataFusion and custom function
+    "concat", // Note: concat is supported both as DataFusion and custom function
 ];
 
 /// Convert flow Value to DataFusion ScalarValue
+#[cfg(feature = "datafusion")]
 pub fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
     match value {
         Value::Null => Err(DataFusionError::NotImplemented(
-            "Null value conversion to ScalarValue requires type information".to_string()
+            "Null value conversion to ScalarValue requires type information".to_string(),
         )),
         Value::Int8(v) => Ok(ScalarValue::Int8(Some(*v))),
         Value::Int16(v) => Ok(ScalarValue::Int16(Some(*v))),
@@ -35,22 +48,30 @@ pub fn value_to_scalar_value(value: &Value) -> DataFusionResult<ScalarValue> {
         Value::String(v) => Ok(ScalarValue::Utf8(Some(v.clone()))),
         Value::Bool(v) => Ok(ScalarValue::Boolean(Some(*v))),
         Value::Struct(_) => Err(DataFusionError::NotImplemented(
-            "Struct value conversion not implemented".to_string()
+            "Struct value conversion not implemented".to_string(),
         )),
         Value::List(_) => Err(DataFusionError::NotImplemented(
-            "List value conversion not implemented".to_string()
+            "List value conversion not implemented".to_string(),
         )),
     }
 }
 
 /// Convert DataFusion ScalarValue to flow Value
+#[cfg(feature = "datafusion")]
 pub fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
     match scalar {
-        ScalarValue::Int8(None) | ScalarValue::Int16(None) | ScalarValue::Int32(None) | ScalarValue::Int64(None) |
-        ScalarValue::Float32(None) | ScalarValue::Float64(None) | ScalarValue::UInt8(None) | ScalarValue::UInt16(None) |
-        ScalarValue::UInt32(None) | ScalarValue::UInt64(None) | ScalarValue::Utf8(None) | ScalarValue::Boolean(None) => {
-            Ok(Value::Null)
-        },
+        ScalarValue::Int8(None)
+        | ScalarValue::Int16(None)
+        | ScalarValue::Int32(None)
+        | ScalarValue::Int64(None)
+        | ScalarValue::Float32(None)
+        | ScalarValue::Float64(None)
+        | ScalarValue::UInt8(None)
+        | ScalarValue::UInt16(None)
+        | ScalarValue::UInt32(None)
+        | ScalarValue::UInt64(None)
+        | ScalarValue::Utf8(None)
+        | ScalarValue::Boolean(None) => Ok(Value::Null),
         ScalarValue::Int8(Some(v)) => Ok(Value::Int8(*v)),
         ScalarValue::Int16(Some(v)) => Ok(Value::Int16(*v)),
         ScalarValue::Int32(Some(v)) => Ok(Value::Int32(*v)),
@@ -63,11 +84,15 @@ pub fn scalar_value_to_value(scalar: &ScalarValue) -> DataFusionResult<Value> {
         ScalarValue::UInt64(Some(v)) => Ok(Value::Uint64(*v)),
         ScalarValue::Utf8(Some(v)) => Ok(Value::String(v.clone())),
         ScalarValue::Boolean(Some(v)) => Ok(Value::Bool(*v)),
-        _ => Err(DataFusionError::NotImplemented(format!("Unsupported ScalarValue type: {:?}", scalar))),
+        _ => Err(DataFusionError::NotImplemented(format!(
+            "Unsupported ScalarValue type: {:?}",
+            scalar
+        ))),
     }
 }
 
 /// Convert ConcreteDatatype to Arrow DataType
+#[cfg(feature = "datafusion")]
 pub fn concrete_datatype_to_arrow_type(dt: &ConcreteDatatype) -> DataFusionResult<DataType> {
     match dt {
         ConcreteDatatype::Null => Ok(DataType::Null),
@@ -83,12 +108,17 @@ pub fn concrete_datatype_to_arrow_type(dt: &ConcreteDatatype) -> DataFusionResul
         ConcreteDatatype::Uint64(_) => Ok(DataType::UInt64),
         ConcreteDatatype::String(_) => Ok(DataType::Utf8),
         ConcreteDatatype::Bool(_) => Ok(DataType::Boolean),
-        ConcreteDatatype::Struct(_) => Err(DataFusionError::NotImplemented("Struct type conversion not implemented".to_string())),
-        ConcreteDatatype::List(_) => Err(DataFusionError::NotImplemented("List type conversion not implemented".to_string())),
+        ConcreteDatatype::Struct(_) => Err(DataFusionError::NotImplemented(
+            "Struct type conversion not implemented".to_string(),
+        )),
+        ConcreteDatatype::List(_) => Err(DataFusionError::NotImplemented(
+            "List type conversion not implemented".to_string(),
+        )),
     }
 }
 
 /// Convert flow Schema to Arrow Schema
+#[cfg(feature = "datafusion")]
 pub fn flow_schema_to_arrow_schema(flow_schema: &FlowSchema) -> DataFusionResult<ArrowSchema> {
     let fields: DataFusionResult<Vec<Field>> = flow_schema
         .column_schemas()
@@ -98,11 +128,12 @@ pub fn flow_schema_to_arrow_schema(flow_schema: &FlowSchema) -> DataFusionResult
             Ok(Field::new(&col_schema.name, data_type, true)) // Assuming nullable for now
         })
         .collect();
-    
+
     Ok(ArrowSchema::new(fields?))
 }
 
 /// Create a DataFusion function call by name
+#[cfg(feature = "datafusion")]
 pub fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFusionResult<Expr> {
     // Check if the function is in the allowed DataFusion functions list
     if !DATAFUSION_FUNCTIONS.contains(&function_name.as_str()) {
@@ -111,7 +142,7 @@ pub fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFu
             function_name, DATAFUSION_FUNCTIONS
         )));
     }
-    
+
     match function_name.as_str() {
         "concat" => {
             // Use DataFusion's built-in concat function
@@ -160,12 +191,14 @@ pub fn create_df_function_call(function_name: String, args: Vec<Expr>) -> DataFu
 }
 
 /// Error types for DataFusion adapter
+#[cfg(feature = "datafusion")]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdapterError {
     DataFusionError(String),
     TypeConversionError(String),
 }
 
+#[cfg(feature = "datafusion")]
 impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -175,8 +208,10 @@ impl std::fmt::Display for AdapterError {
     }
 }
 
+#[cfg(feature = "datafusion")]
 impl std::error::Error for AdapterError {}
 
+#[cfg(feature = "datafusion")]
 impl From<DataFusionError> for AdapterError {
     fn from(error: DataFusionError) -> Self {
         AdapterError::DataFusionError(error.to_string())
@@ -184,6 +219,7 @@ impl From<DataFusionError> for AdapterError {
 }
 
 #[cfg(test)]
+#[cfg(feature = "datafusion")]
 mod tests {
     use super::*;
 
@@ -192,10 +228,14 @@ mod tests {
         // Test that all DATAFUSION_FUNCTIONS are supported
         for &func_name in DATAFUSION_FUNCTIONS {
             let result = create_df_function_call(func_name.to_string(), vec![]);
-            assert!(result.is_ok(), "Function '{}' should be supported", func_name);
+            assert!(
+                result.is_ok(),
+                "Function '{}' should be supported",
+                func_name
+            );
         }
     }
-    
+
     #[test]
     fn test_unknown_function_error() {
         let result = create_df_function_call("unknown_function".to_string(), vec![]);
@@ -204,13 +244,13 @@ mod tests {
         assert!(error_msg.contains("not available for CallDf"));
         assert!(error_msg.contains("concat")); // Should list available functions
     }
-    
+
     #[test]
     fn test_custom_function_list() {
         // Verify concat is in both lists
         assert!(DATAFUSION_FUNCTIONS.contains(&"concat"));
         assert!(CUSTOM_FUNCTIONS.contains(&"concat"));
-        
+
         // Verify other functions are only in DATAFUSION_FUNCTIONS
         assert!(DATAFUSION_FUNCTIONS.contains(&"upper"));
         assert!(!CUSTOM_FUNCTIONS.contains(&"upper"));

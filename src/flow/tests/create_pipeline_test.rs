@@ -3,10 +3,10 @@
 //! This module tests the high-level create_pipeline function that creates
 //! a complete processing pipeline from SQL queries.
 
-use flow::create_pipeline;
-use flow::processor::StreamData;
-use flow::model::{Column, RecordBatch as FlowRecordBatch};
 use datatypes::Value;
+use flow::create_pipeline;
+use flow::model::{Column, RecordBatch as FlowRecordBatch};
+use flow::processor::StreamData;
 use tokio::time::{timeout, Duration};
 
 /// Test case structure for table-driven tests
@@ -29,10 +29,12 @@ struct ColumnCheck {
 /// Run a single test case
 async fn run_test_case(test_case: TestCase) {
     println!("Running test: {}", test_case.name);
-    
+
     // Create pipeline from SQL
-    let mut pipeline = create_pipeline(test_case.sql)
-        .expect(&format!("Failed to create pipeline for: {}", test_case.name));
+    let mut pipeline = create_pipeline(test_case.sql).expect(&format!(
+        "Failed to create pipeline for: {}",
+        test_case.name
+    ));
 
     pipeline.start();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -43,59 +45,85 @@ async fn run_test_case(test_case: TestCase) {
         let column = Column::new("".to_string(), col_name, values);
         columns.push(column);
     }
-    
-    let test_batch = FlowRecordBatch::new(columns)
-        .expect(&format!("Failed to create test RecordBatch for: {}", test_case.name));
+
+    let test_batch = FlowRecordBatch::new(columns).expect(&format!(
+        "Failed to create test RecordBatch for: {}",
+        test_case.name
+    ));
 
     let stream_data = StreamData::Collection(Box::new(test_batch));
-    pipeline.input.send(stream_data).await
+    pipeline
+        .input
+        .send(stream_data)
+        .await
         .expect(&format!("Failed to send test data for: {}", test_case.name));
 
     // Receive and verify results
     let timeout_duration = Duration::from_secs(5);
     let received_data = timeout(timeout_duration, pipeline.output.recv())
         .await
-        .expect(&format!("Timeout waiting for output for: {}", test_case.name))
+        .expect(&format!(
+            "Timeout waiting for output for: {}",
+            test_case.name
+        ))
         .expect(&format!("Failed to receive output for: {}", test_case.name));
 
     match received_data {
         StreamData::Collection(result_collection) => {
             let batch = result_collection.as_ref();
-            
+
             // Check basic properties
             assert_eq!(
-                batch.num_rows(), test_case.expected_rows,
-                "Wrong number of rows for test: {}", test_case.name
+                batch.num_rows(),
+                test_case.expected_rows,
+                "Wrong number of rows for test: {}",
+                test_case.name
             );
             assert_eq!(
-                batch.num_columns(), test_case.expected_columns,
-                "Wrong number of columns for test: {}", test_case.name
+                batch.num_columns(),
+                test_case.expected_columns,
+                "Wrong number of columns for test: {}",
+                test_case.name
             );
-            
+
             // Check specific columns
             for check in test_case.column_checks {
-                let col = batch.column(check.column_index)
-                    .expect(&format!("Column {} not found for test: {}", check.column_index, test_case.name));
+                let col = batch.column(check.column_index).expect(&format!(
+                    "Column {} not found for test: {}",
+                    check.column_index, test_case.name
+                ));
                 assert_eq!(
                     col.name, check.expected_name,
-                    "Wrong column name at index {} for test: {}", check.column_index, test_case.name
+                    "Wrong column name at index {} for test: {}",
+                    check.column_index, test_case.name
                 );
                 assert_eq!(
-                    col.values(), &check.expected_values,
-                    "Wrong values in column {} for test: {}", check.column_index, test_case.name
+                    col.values(),
+                    &check.expected_values,
+                    "Wrong values in column {} for test: {}",
+                    check.column_index,
+                    test_case.name
                 );
             }
         }
         StreamData::Control(_) => {
-            panic!("Expected Collection data, but received control signal for test: {}", test_case.name);
+            panic!(
+                "Expected Collection data, but received control signal for test: {}",
+                test_case.name
+            );
         }
         StreamData::Error(e) => {
-            panic!("Expected Collection data, but received error for test: {}: {}", test_case.name, e.message);
+            panic!(
+                "Expected Collection data, but received error for test: {}: {}",
+                test_case.name, e.message
+            );
         }
     }
-    
-    pipeline.close().await
-        .expect(&format!("Failed to close pipeline for test: {}", test_case.name));
+
+    pipeline.close().await.expect(&format!(
+        "Failed to close pipeline for test: {}",
+        test_case.name
+    ));
 }
 
 /// Test create_pipeline with various SQL queries using table-driven approach
@@ -106,9 +134,18 @@ async fn test_create_pipeline_various_queries() {
             name: "simple_projection",
             sql: "SELECT a + 1, b + 2 FROM stream",
             input_data: vec![
-                ("a".to_string(), vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)]),
-                ("b".to_string(), vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)]),
-                ("c".to_string(), vec![Value::Int64(1000), Value::Int64(2000), Value::Int64(3000)]),
+                (
+                    "a".to_string(),
+                    vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
+                ),
+                (
+                    "b".to_string(),
+                    vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)],
+                ),
+                (
+                    "c".to_string(),
+                    vec![Value::Int64(1000), Value::Int64(2000), Value::Int64(3000)],
+                ),
             ],
             expected_rows: 3,
             expected_columns: 2,
@@ -129,8 +166,14 @@ async fn test_create_pipeline_various_queries() {
             name: "simple_filter",
             sql: "SELECT a, b FROM stream WHERE a > 15",
             input_data: vec![
-                ("a".to_string(), vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)]),
-                ("b".to_string(), vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)]),
+                (
+                    "a".to_string(),
+                    vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
+                ),
+                (
+                    "b".to_string(),
+                    vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)],
+                ),
             ],
             expected_rows: 2, // Only rows where a > 15
             expected_columns: 2,
@@ -151,8 +194,14 @@ async fn test_create_pipeline_various_queries() {
             name: "filter_with_projection",
             sql: "SELECT a + 5, b * 2 FROM stream WHERE a > 15",
             input_data: vec![
-                ("a".to_string(), vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)]),
-                ("b".to_string(), vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)]),
+                (
+                    "a".to_string(),
+                    vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
+                ),
+                (
+                    "b".to_string(),
+                    vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)],
+                ),
             ],
             expected_rows: 2, // Only rows where a > 15
             expected_columns: 2,
@@ -173,8 +222,14 @@ async fn test_create_pipeline_various_queries() {
             name: "filter_no_matches",
             sql: "SELECT a, b FROM stream WHERE a > 100",
             input_data: vec![
-                ("a".to_string(), vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)]),
-                ("b".to_string(), vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)]),
+                (
+                    "a".to_string(),
+                    vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
+                ),
+                (
+                    "b".to_string(),
+                    vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)],
+                ),
             ],
             expected_rows: 0, // No rows match the filter
             expected_columns: 2,
@@ -194,18 +249,17 @@ async fn test_create_pipeline_various_queries() {
         TestCase {
             name: "filter_all_match",
             sql: "SELECT a FROM stream WHERE a > 5",
-            input_data: vec![
-                ("a".to_string(), vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)]),
-            ],
+            input_data: vec![(
+                "a".to_string(),
+                vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
+            )],
             expected_rows: 3, // All rows match the filter
             expected_columns: 1,
-            column_checks: vec![
-                ColumnCheck {
-                    column_index: 0,
-                    expected_name: "a".to_string(),
-                    expected_values: vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
-                },
-            ],
+            column_checks: vec![ColumnCheck {
+                column_index: 0,
+                expected_name: "a".to_string(),
+                expected_values: vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
+            }],
         },
     ];
 
@@ -220,7 +274,7 @@ async fn test_create_pipeline_various_queries() {
 async fn test_create_pipeline_invalid_sql() {
     let invalid_sql_cases = vec![
         "INVALID SQL SYNTAX",
-        "SELECT * FROM", // incomplete query
+        "SELECT * FROM",                // incomplete query
         "INSERT INTO table VALUES (1)", // unsupported statement type
         "",
     ];

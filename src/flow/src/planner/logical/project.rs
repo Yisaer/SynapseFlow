@@ -1,7 +1,7 @@
+use crate::planner::logical::{BaseLogicalPlan, LogicalPlan};
+use sqlparser::ast::Expr;
 use std::any::Any;
 use std::sync::Arc;
-use crate::planner::logical::{LogicalPlan, BaseLogicalPlan};
-use sqlparser::ast::Expr;
 
 #[derive(Debug, Clone)]
 pub struct ProjectField {
@@ -34,7 +34,7 @@ impl LogicalPlan for Project {
     fn get_plan_index(&self) -> &i64 {
         &self.base.index
     }
-    
+
     fn as_any(&self) -> &dyn Any {
         self
     }

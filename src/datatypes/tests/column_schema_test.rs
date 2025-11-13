@@ -8,9 +8,9 @@ fn test_column_schema_basic() {
     let column = ColumnSchema::new(
         "users".to_string(),
         "id".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     assert_eq!(column.name, "id");
     assert_eq!(column.source_name(), "users");
     assert!(column.belongs_to("users"));
@@ -23,26 +23,26 @@ fn test_column_schema_different_sources() {
     let user_id = ColumnSchema::new(
         "users".to_string(),
         "id".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     let user_name = ColumnSchema::new(
         "users".to_string(),
         "name".to_string(),
-        ConcreteDatatype::String(StringType)
+        ConcreteDatatype::String(StringType),
     );
-    
+
     let order_id = ColumnSchema::new(
         "orders".to_string(),
         "id".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     // Verify source associations
     assert!(user_id.belongs_to("users"));
     assert!(user_name.belongs_to("users"));
     assert!(order_id.belongs_to("orders"));
-    
+
     assert!(!user_id.belongs_to("orders"));
     assert!(!order_id.belongs_to("users"));
 }
@@ -53,15 +53,15 @@ fn test_column_schema_comparison() {
     let user_id = ColumnSchema::new(
         "users".to_string(),
         "id".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     let order_id = ColumnSchema::new(
         "orders".to_string(),
         "id".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     // Same name but different sources - should be different
     assert_ne!(user_id, order_id);
     assert!(user_id.belongs_to("users"));
@@ -74,9 +74,9 @@ fn test_source_name_access() {
     let column = ColumnSchema::new(
         "my_table".to_string(),
         "test".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     // Should always return the source name, never None
     let source = column.source_name();
     assert_eq!(source, "my_table");
@@ -88,9 +88,9 @@ fn test_belongs_to_functionality() {
     let column = ColumnSchema::new(
         "users".to_string(),
         "user_id".to_string(),
-        ConcreteDatatype::Int64(Int64Type)
+        ConcreteDatatype::Int64(Int64Type),
     );
-    
+
     assert!(column.belongs_to("users"));
     assert!(!column.belongs_to("orders"));
     assert!(!column.belongs_to("USERs")); // Case sensitive

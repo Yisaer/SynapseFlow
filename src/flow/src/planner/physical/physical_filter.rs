@@ -1,11 +1,11 @@
+use crate::expr::ScalarExpr;
+use crate::planner::physical::{BasePhysicalPlan, PhysicalPlan};
+use sqlparser::ast::Expr;
 use std::any::Any;
 use std::sync::Arc;
-use crate::planner::physical::{PhysicalPlan, BasePhysicalPlan};
-use crate::expr::ScalarExpr;
-use sqlparser::ast::Expr;
 
 /// Physical operator for filter operations
-/// 
+///
 /// This operator represents the physical execution of filter operations,
 /// applying predicate expressions to filter records from input data.
 #[derive(Debug, Clone)]
@@ -36,15 +36,15 @@ impl PhysicalPlan for PhysicalFilter {
     fn children(&self) -> &[Arc<dyn PhysicalPlan>] {
         &self.base.children
     }
-    
+
     fn get_plan_type(&self) -> &str {
         "PhysicalFilter"
     }
-    
+
     fn get_plan_index(&self) -> &i64 {
         &self.base.index
     }
-    
+
     fn as_any(&self) -> &dyn Any {
         self
     }

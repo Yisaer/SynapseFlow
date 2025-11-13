@@ -11,7 +11,8 @@ pub struct ColumnSchema {
     pub data_type: ConcreteDatatype,
 }
 
-impl ColumnSchema { pub fn new(source_name: String, name: String,data_type: ConcreteDatatype) -> Self {
+impl ColumnSchema {
+    pub fn new(source_name: String, name: String, data_type: ConcreteDatatype) -> Self {
         ColumnSchema {
             name,
             source_name,

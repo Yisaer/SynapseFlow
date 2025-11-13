@@ -9,31 +9,29 @@ use crate::dialect::StreamDialect;
 /// Extract all expressions from SQL statements
 pub fn extract_expressions_from_sql(sql: &str) -> Result<Vec<String>, String> {
     let dialect = StreamDialect::new();
-    let statements = Parser::parse_sql(&dialect, sql)
-        .map_err(|e| format!("Parse error: {}", e))?;
-    
+    let statements = Parser::parse_sql(&dialect, sql).map_err(|e| format!("Parse error: {}", e))?;
+
     let mut extractor = ExpressionExtractor::new();
-    
+
     for statement in &statements {
         let _ = statement.visit(&mut extractor);
     }
-    
+
     Ok(extractor.expressions)
 }
 
 /// Extract SELECT expressions from SQL
 pub fn extract_select_expressions_simple(sql: &str) -> Result<Vec<String>, String> {
     let dialect = StreamDialect::new();
-    let statements = Parser::parse_sql(&dialect, sql)
-        .map_err(|e| format!("Parse error: {}", e))?;
-    
+    let statements = Parser::parse_sql(&dialect, sql).map_err(|e| format!("Parse error: {}", e))?;
+
     if statements.len() != 1 {
         return Err("Expected exactly one SQL statement".to_string());
     }
-    
+
     let mut extractor = SelectExpressionExtractor::new();
     let _ = statements[0].visit(&mut extractor);
-    
+
     Ok(extractor.expressions)
 }
 
@@ -85,9 +83,8 @@ impl Visitor for SelectExpressionExtractor {
 /// Helper function to parse and analyze SQL expressions
 pub fn analyze_sql_expressions(sql: &str) -> Result<ExpressionAnalysis, String> {
     let dialect = StreamDialect::new();
-    let statements = Parser::parse_sql(&dialect, sql)
-        .map_err(|e| format!("Parse error: {}", e))?;
-    
+    let statements = Parser::parse_sql(&dialect, sql).map_err(|e| format!("Parse error: {}", e))?;
+
     let mut analysis = ExpressionAnalysis {
         sql: sql.to_string(),
         expression_count: 0,
@@ -95,12 +92,12 @@ pub fn analyze_sql_expressions(sql: &str) -> Result<ExpressionAnalysis, String> 
         literals: Vec::new(),
         functions: Vec::new(),
     };
-    
+
     for statement in &statements {
         let mut analyzer = ExpressionAnalyzer::new(&mut analysis);
         let _ = statement.visit(&mut analyzer);
     }
-    
+
     Ok(analysis)
 }
 
@@ -130,7 +127,7 @@ impl Visitor for ExpressionAnalyzer<'_> {
 
     fn pre_visit_expr(&mut self, expr: &Expr) -> std::ops::ControlFlow<Self::Break> {
         self.analysis.expression_count += 1;
-        
+
         match expr {
             Expr::BinaryOp { op, .. } => {
                 self.analysis.binary_operations.push(format!("{:?}", op));
@@ -145,7 +142,7 @@ impl Visitor for ExpressionAnalyzer<'_> {
             // Parser module should only focus on basic SQL parsing analysis
             _ => {}
         }
-        
+
         std::ops::ControlFlow::Continue(())
     }
 }
@@ -158,11 +155,11 @@ mod tests {
     fn test_extract_simple_expression() {
         let sql = "SELECT a + b";
         let result = extract_expressions_from_sql(sql);
-        
+
         assert!(result.is_ok());
         let expressions = result.unwrap();
         assert!(!expressions.is_empty());
-        
+
         // Should contain the binary operation
         let has_binary_op = expressions.iter().any(|expr| expr.contains("BinaryOp"));
         assert!(has_binary_op);
@@ -172,7 +169,7 @@ mod tests {
     fn test_analyze_expressions() {
         let sql = "SELECT a + b, CONCAT(name, 'test'), 42";
         let analysis = analyze_sql_expressions(sql).unwrap();
-        
+
         assert!(analysis.expression_count > 0);
         assert!(!analysis.binary_operations.is_empty());
         assert!(!analysis.functions.is_empty());

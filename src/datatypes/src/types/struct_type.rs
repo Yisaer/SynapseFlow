@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::datatypes::DataType;
 use crate::datatypes::ConcreteDatatype;
+use crate::datatypes::DataType;
 use crate::value::{StructValue, Value};
 
 /// Struct field definition
@@ -124,7 +124,10 @@ fn get_default_value(dt: &ConcreteDatatype) -> Value {
         ConcreteDatatype::Struct(_) => {
             // For nested struct, return empty struct value
             // This is a simplified implementation
-            Value::Struct(StructValue::new(Vec::new(), super::StructType::new(Arc::new(Vec::new()))))
+            Value::Struct(StructValue::new(
+                Vec::new(),
+                super::StructType::new(Arc::new(Vec::new())),
+            ))
         }
         ConcreteDatatype::List(_) => {
             use crate::value::ListValue;
