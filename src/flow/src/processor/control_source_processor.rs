@@ -3,12 +3,12 @@
 //! This processor is responsible for receiving and sending control signals
 //! that coordinate the entire stream processing pipeline.
 
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use crate::processor::base::broadcast_all;
+use crate::processor::{Processor, ProcessorError, StreamData};
 use futures::stream::StreamExt;
 use std::collections::HashMap;
-use crate::processor::{Processor, ProcessorError, StreamData};
-use crate::processor::base::broadcast_all;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// ControlSourceProcessor - handles control signals for the pipeline
 ///
@@ -37,7 +37,7 @@ impl ControlSourceProcessor {
             output_map: HashMap::new(),
         }
     }
-    
+
     /// Send StreamData to all downstream processors
     pub async fn send(&self, data: StreamData) -> Result<(), ProcessorError> {
         for output in &self.outputs {
@@ -84,14 +84,15 @@ impl Processor for ControlSourceProcessor {
     fn id(&self) -> &str {
         &self.id
     }
-    
+
     fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
-        let input_result = self.input.take()
-            .ok_or_else(|| ProcessorError::InvalidConfiguration(
-                "ControlSourceProcessor input must be set before starting".to_string()
-            ));
+        let input_result = self.input.take().ok_or_else(|| {
+            ProcessorError::InvalidConfiguration(
+                "ControlSourceProcessor input must be set before starting".to_string(),
+            )
+        });
         let outputs = self.outputs.clone();
-        
+
         tokio::spawn(async move {
             let input = match input_result {
                 Ok(input) => input,
@@ -111,17 +112,17 @@ impl Processor for ControlSourceProcessor {
             Ok(())
         })
     }
-    
+
     fn output_senders(&self) -> Vec<mpsc::Sender<StreamData>> {
         self.outputs.clone()
     }
-    
+
     fn add_input(&mut self, receiver: mpsc::Receiver<StreamData>) {
         // ControlSourceProcessor only supports single input
         // If input is already set, replace it
         self.input = Some(receiver);
     }
-    
+
     fn add_output(&mut self, sender: mpsc::Sender<StreamData>) {
         let auto_id = format!("auto_output_{}", self.outputs.len());
         self.add_output_for_processor(auto_id, sender);

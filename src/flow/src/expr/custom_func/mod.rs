@@ -1,8 +1,8 @@
 pub mod string_func;
 
+use crate::expr::func::EvalError;
 use datatypes::Value;
 pub use string_func::ConcatFunc;
-use crate::expr::func::EvalError;
 
 /// List of functions that can be called through CallFunc (custom functions)
 pub const CUSTOM_FUNCTIONS: &[&str] = &[

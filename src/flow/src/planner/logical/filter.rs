@@ -1,7 +1,7 @@
+use crate::planner::logical::{BaseLogicalPlan, LogicalPlan};
+use sqlparser::ast::Expr;
 use std::any::Any;
 use std::sync::Arc;
-use crate::planner::logical::{LogicalPlan, BaseLogicalPlan};
-use sqlparser::ast::Expr;
 
 #[derive(Debug, Clone)]
 pub struct Filter {
@@ -10,8 +10,8 @@ pub struct Filter {
 }
 
 impl Filter {
-    pub fn new(predicate: Expr, children: Vec<Arc<dyn LogicalPlan>>,index:i64) -> Self {
-        let base = BaseLogicalPlan::new(children,index);
+    pub fn new(predicate: Expr, children: Vec<Arc<dyn LogicalPlan>>, index: i64) -> Self {
+        let base = BaseLogicalPlan::new(children, index);
         Self { base, predicate }
     }
 }
@@ -28,7 +28,7 @@ impl LogicalPlan for Filter {
     fn get_plan_index(&self) -> &i64 {
         &self.base.index
     }
-    
+
     fn as_any(&self) -> &dyn Any {
         self
     }

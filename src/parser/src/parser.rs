@@ -1,10 +1,10 @@
+use sqlparser::ast::Visit;
 use sqlparser::ast::{Query, Select, SelectItem, SetExpr, Statement};
 use sqlparser::parser::Parser;
-use sqlparser::ast::Visit;
 
-use crate::dialect::StreamDialect;
-use crate::select_stmt::{SelectStmt, SelectField};
 use crate::aggregate_transformer::transform_aggregate_functions;
+use crate::dialect::StreamDialect;
+use crate::select_stmt::{SelectField, SelectStmt};
 use crate::visitor::TableInfoVisitor;
 
 /// SQL Parser based on StreamDialect
@@ -25,15 +25,15 @@ impl StreamSqlParser {
     /// Automatically transforms aggregate functions during parsing
     pub fn parse(&self, sql: &str) -> Result<SelectStmt, String> {
         // Create a parser with StreamDialect
-        let mut parser = Parser::parse_sql(&self.dialect, sql)
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let mut parser =
+            Parser::parse_sql(&self.dialect, sql).map_err(|e| format!("Parse error: {}", e))?;
 
         if parser.len() != 1 {
             return Err("Expected exactly one SQL statement".to_string());
         }
 
         let statement = &mut parser[0];
-        
+
         // Process the statement to handle any dialect-specific features
         if let Err(e) = crate::dialect::process_tumblingwindow_in_statement(statement) {
             return Err(format!("Dialect processing error: {}", e));
@@ -41,10 +41,10 @@ impl StreamSqlParser {
 
         // Extract raw select fields from the statement (before transformation)
         let select_stmt = self.extract_select_fields(statement)?;
-        
+
         // Transform aggregate functions in one step (search + replace)
         let (transformed_stmt, _aggregate_mappings) = transform_aggregate_functions(select_stmt)?;
-        
+
         Ok(transformed_stmt)
     }
 
@@ -74,10 +74,7 @@ impl StreamSqlParser {
                     select_fields.push(SelectField::new(expr.clone(), None));
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
-                    select_fields.push(SelectField::new(
-                        expr.clone(), 
-                        Some(alias.value.clone())
-                    ));
+                    select_fields.push(SelectField::new(expr.clone(), Some(alias.value.clone())));
                 }
                 SelectItem::Wildcard(_) => {
                     return Err("Wildcard (*) is not supported in select fields".to_string());
@@ -91,15 +88,16 @@ impl StreamSqlParser {
         // Extract WHERE and HAVING clauses if present
         let where_condition = select.selection.clone();
         let having = select.having.clone();
-        
+
         // Use visitor pattern to extract table (source) information
         let mut table_visitor = TableInfoVisitor::new();
         let _ = select.visit(&mut table_visitor);
         let source_infos = table_visitor.get_sources();
 
-        let mut select_stmt = SelectStmt::with_fields_and_conditions(select_fields, where_condition, having);
+        let mut select_stmt =
+            SelectStmt::with_fields_and_conditions(select_fields, where_condition, having);
         select_stmt.source_infos = source_infos;
-        
+
         Ok(select_stmt)
     }
 }
@@ -137,11 +135,11 @@ mod tests {
     fn test_parse_simple_select() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a + b");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.select_fields.len(), 1);
-        
+
         let field = &select_stmt.select_fields[0];
         assert!(field.alias.is_none());
     }
@@ -150,11 +148,11 @@ mod tests {
     fn test_parse_select_with_alias() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a + b AS total");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.select_fields.len(), 1);
-        
+
         let field = &select_stmt.select_fields[0];
         assert_eq!(field.alias, Some("total".to_string()));
     }
@@ -163,24 +161,27 @@ mod tests {
     fn test_parse_multiple_fields() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a, b + c, CONCAT(name, 'test') AS full_name");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.select_fields.len(), 3);
-        
+
         // First field: a
         assert_eq!(select_stmt.select_fields[0].alias, None);
         // Second field: b + c
         assert_eq!(select_stmt.select_fields[1].alias, None);
         // Third field: CONCAT with alias
-        assert_eq!(select_stmt.select_fields[2].alias, Some("full_name".to_string()));
+        assert_eq!(
+            select_stmt.select_fields[2].alias,
+            Some("full_name".to_string())
+        );
     }
 
     #[test]
     fn test_parse_invalid_sql() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("INVALID SQL");
-        
+
         assert!(result.is_err());
     }
 
@@ -188,7 +189,7 @@ mod tests {
     fn test_parse_non_select() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("INSERT INTO table VALUES (1)");
-        
+
         assert!(result.is_err());
         let error_msg = result.unwrap_err();
         assert!(error_msg.contains("Parse error"));
@@ -198,7 +199,7 @@ mod tests {
     fn test_convenience_function() {
         let result = parse_sql("SELECT a * b");
         assert!(result.is_ok());
-        
+
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.select_fields.len(), 1);
     }
@@ -212,50 +213,50 @@ mod source_info_tests {
     fn test_parse_select_with_single_table() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a, b FROM users");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.source_infos.len(), 1);
-        
+
         let source = &select_stmt.source_infos[0];
         assert_eq!(source.name, "users");
         assert_eq!(source.alias, None);
     }
-    
+
     #[test]
     fn test_parse_select_with_table_alias() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a, b FROM users AS u");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.source_infos.len(), 1);
-        
+
         let source = &select_stmt.source_infos[0];
         assert_eq!(source.name, "users");
         assert_eq!(source.alias, Some("u".to_string()));
     }
-    
+
     #[test]
     fn test_parse_select_with_multiple_tables() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a, b FROM users AS u, orders AS o");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.source_infos.len(), 2);
-        
+
         assert_eq!(select_stmt.source_infos[0].name, "users");
         assert_eq!(select_stmt.source_infos[0].alias, Some("u".to_string()));
         assert_eq!(select_stmt.source_infos[1].name, "orders");
         assert_eq!(select_stmt.source_infos[1].alias, Some("o".to_string()));
     }
-    
+
     #[test]
     fn test_parse_select_with_where_clause() {
         let parser = StreamSqlParser::new();
         let result = parser.parse("SELECT a, b FROM users WHERE a > 10");
-        
+
         assert!(result.is_ok());
         let select_stmt = result.unwrap();
         assert_eq!(select_stmt.source_infos.len(), 1);

@@ -1,17 +1,16 @@
-
 //! Processor builder - creates and connects processors from PhysicalPlan
 //!
 //! This module provides utilities to build processor pipelines from PhysicalPlan,
 //! connecting ControlSourceProcessor outputs to leaf nodes (nodes without children).
 
+use crate::planner::physical::{PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject};
+use crate::processor::{
+    ControlSourceProcessor, DataSourceProcessor, FilterProcessor, Processor, ProcessorError,
+    ProjectProcessor, ResultSinkProcessor, StreamData,
+};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use std::sync::Arc;
-use crate::processor::{
-    Processor, ProcessorError, 
-    ControlSourceProcessor, DataSourceProcessor, ProjectProcessor, FilterProcessor, ResultSinkProcessor, StreamData,
-};
-use crate::planner::physical::{PhysicalPlan, PhysicalDataSource, PhysicalProject, PhysicalFilter};
 
 /// Enum for all processor types created from PhysicalPlan
 ///
@@ -35,7 +34,7 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.id(),
         }
     }
-    
+
     /// Start the processor
     pub fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
         match self {
@@ -44,7 +43,7 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.start(),
         }
     }
-    
+
     /// Get output channel senders
     pub fn output_senders(&self) -> Vec<mpsc::Sender<crate::processor::StreamData>> {
         match self {
@@ -53,7 +52,7 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.output_senders(),
         }
     }
-    
+
     /// Add an input channel
     pub fn add_input(&mut self, receiver: mpsc::Receiver<crate::processor::StreamData>) {
         match self {
@@ -62,7 +61,7 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.add_input(receiver),
         }
     }
-    
+
     /// Add an output channel
     pub fn add_output(&mut self, sender: mpsc::Sender<crate::processor::StreamData>) {
         match self {
@@ -130,7 +129,7 @@ impl ProcessorPipeline {
 
         Ok(())
     }
-    
+
     /// Send StreamData to a specific downstream processor by id
     ///
     /// This method directly delegates to ControlSourceProcessor's send_stream_data method,
@@ -148,7 +147,9 @@ impl ProcessorPipeline {
         processor_id: &str,
         data: StreamData,
     ) -> Result<(), ProcessorError> {
-        self.control_source.send_stream_data(processor_id, data).await
+        self.control_source
+            .send_stream_data(processor_id, data)
+            .await
     }
 }
 
@@ -169,23 +170,15 @@ pub fn create_processor_from_plan_node(
 ) -> Result<PlanProcessor, ProcessorError> {
     if let Some(ds) = plan.as_any().downcast_ref::<PhysicalDataSource>() {
         let processor_id = ds.source_name();
-        let processor = DataSourceProcessor::new(
-            processor_id,
-        );
+        let processor = DataSourceProcessor::new(processor_id);
         Ok(PlanProcessor::DataSource(processor))
     } else if let Some(proj) = plan.as_any().downcast_ref::<PhysicalProject>() {
         let processor_id = format!("project_{}", _idx);
-        let processor = ProjectProcessor::new(
-            processor_id,
-            Arc::new(proj.clone()),
-        );
+        let processor = ProjectProcessor::new(processor_id, Arc::new(proj.clone()));
         Ok(PlanProcessor::Project(processor))
     } else if let Some(filter) = plan.as_any().downcast_ref::<PhysicalFilter>() {
         let processor_id = format!("filter_{}", _idx);
-        let processor = FilterProcessor::new(
-            processor_id,
-            Arc::new(filter.clone()),
-        );
+        let processor = FilterProcessor::new(processor_id, Arc::new(filter.clone()));
         Ok(PlanProcessor::Filter(processor))
     } else {
         Err(ProcessorError::InvalidConfiguration(format!(
@@ -210,15 +203,15 @@ impl ProcessorMap {
             processor_counter: 0,
         }
     }
-    
+
     fn get_processor_mut(&mut self, plan_index: i64) -> Option<&mut PlanProcessor> {
         self.processors.get_mut(&plan_index)
     }
-    
+
     fn insert_processor(&mut self, plan_index: i64, processor: PlanProcessor) {
         self.processors.insert(plan_index, processor);
     }
-    
+
     fn get_all_processors(self) -> Vec<PlanProcessor> {
         self.processors.into_values().collect()
     }
@@ -235,24 +228,24 @@ fn build_processors_recursive(
     processor_map: &mut ProcessorMap,
 ) -> Result<(), ProcessorError> {
     let plan_index = *plan.get_plan_index();
-    
+
     // Create processor for current node
     let processor = create_processor_from_plan_node(&plan, processor_map.processor_counter)?;
     processor_map.processor_counter += 1;
     processor_map.insert_processor(plan_index, processor);
-    
+
     // Recursively process children
     for child in plan.children() {
         build_processors_recursive(Arc::clone(child), processor_map)?;
     }
-    
+
     Ok(())
 }
 
 /// Collect leaf node indices from PhysicalPlan tree
 fn collect_leaf_indices(plan: Arc<dyn PhysicalPlan>) -> Vec<i64> {
     let mut leaf_indices = Vec::new();
-    
+
     if plan.children().is_empty() {
         leaf_indices.push(*plan.get_plan_index());
     } else {
@@ -260,7 +253,7 @@ fn collect_leaf_indices(plan: Arc<dyn PhysicalPlan>) -> Vec<i64> {
             leaf_indices.extend(collect_leaf_indices(Arc::clone(child)));
         }
     }
-    
+
     leaf_indices
 }
 
@@ -268,14 +261,14 @@ fn collect_leaf_indices(plan: Arc<dyn PhysicalPlan>) -> Vec<i64> {
 fn collect_parent_child_relations(plan: Arc<dyn PhysicalPlan>) -> Vec<(i64, i64)> {
     let mut relations = Vec::new();
     let parent_index = *plan.get_plan_index();
-    
+
     for child in plan.children() {
         let child_index = *child.get_plan_index();
         relations.push((parent_index, child_index));
         // Recursively collect from children
         relations.extend(collect_parent_child_relations(Arc::clone(child)));
     }
-    
+
     relations
 }
 
@@ -299,24 +292,24 @@ fn connect_processors(
             processor.add_input(receiver);
         }
     }
-    
+
     // 2. Connect children outputs to parent inputs
     let relations = collect_parent_child_relations(Arc::clone(&physical_plan));
     for (parent_index, child_index) in relations {
         // Create channel
         let (sender, receiver) = mpsc::channel(100);
-        
+
         // Connect child output
         if let Some(child_processor) = processor_map.get_processor_mut(child_index) {
             child_processor.add_output(sender);
         }
-        
+
         // Connect parent input
         if let Some(parent_processor) = processor_map.get_processor_mut(parent_index) {
             parent_processor.add_input(receiver);
         }
     }
-    
+
     Ok(())
 }
 
@@ -345,7 +338,11 @@ pub fn create_processor_pipeline(
     let mut processor_map = ProcessorMap::new();
     build_processors_recursive(Arc::clone(&physical_plan), &mut processor_map)?;
 
-    connect_processors(Arc::clone(&physical_plan), &mut processor_map, &mut control_source)?;
+    connect_processors(
+        Arc::clone(&physical_plan),
+        &mut processor_map,
+        &mut control_source,
+    )?;
 
     let mut result_sink = ResultSinkProcessor::new("result_sink");
 
@@ -356,7 +353,7 @@ pub fn create_processor_pipeline(
         result_sink.add_input(receiver);
     } else {
         return Err(ProcessorError::InvalidConfiguration(
-            "Root processor not found".to_string()
+            "Root processor not found".to_string(),
         ));
     }
 
@@ -364,7 +361,7 @@ pub fn create_processor_pipeline(
     result_sink.add_output(result_output_sender);
 
     let middle_processors = processor_map.get_all_processors();
-    
+
     Ok(ProcessorPipeline {
         input: pipeline_input_sender,
         output: pipeline_output_receiver,
@@ -378,11 +375,11 @@ pub fn create_processor_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use crate::planner::physical::{PhysicalProject, PhysicalProjectField, PhysicalDataSource};
-    use sqlparser::ast::{Expr, Value as SqlValue};
     use crate::expr::ScalarExpr;
-    use datatypes::{Value, ConcreteDatatype};
+    use crate::planner::physical::{PhysicalDataSource, PhysicalProject, PhysicalProjectField};
+    use datatypes::{ConcreteDatatype, Value};
+    use sqlparser::ast::{Expr, Value as SqlValue};
+    use std::sync::Arc;
 
     #[test]
     fn test_create_processor_from_physical_project() {
@@ -394,26 +391,32 @@ mod tests {
         let project_field = PhysicalProjectField::new(
             "projected_field".to_string(),
             Expr::Value(SqlValue::Number("42".to_string(), false)),
-            ScalarExpr::Literal(Value::Int64(42), ConcreteDatatype::Int64(datatypes::Int64Type)),
+            ScalarExpr::Literal(
+                Value::Int64(42),
+                ConcreteDatatype::Int64(datatypes::Int64Type),
+            ),
         );
 
         // Create a PhysicalProject
-        let physical_project: Arc<dyn crate::planner::physical::PhysicalPlan> =
-            Arc::new(PhysicalProject::with_single_child(
-                vec![project_field],
-                data_source,
-                1,
-            ));
+        let physical_project: Arc<dyn crate::planner::physical::PhysicalPlan> = Arc::new(
+            PhysicalProject::with_single_child(vec![project_field], data_source, 1),
+        );
 
         // Try to create a processor from the PhysicalProject
         let result = create_processor_from_plan_node(&physical_project, 0);
-        
-        assert!(result.is_ok(), "Should successfully create processor from PhysicalProject");
-        
+
+        assert!(
+            result.is_ok(),
+            "Should successfully create processor from PhysicalProject"
+        );
+
         match result {
             Ok(processor) => {
                 assert_eq!(processor.id(), "project_0");
-                println!("✅ SUCCESS: PhysicalProject processor created with ID: {}", processor.id());
+                println!(
+                    "✅ SUCCESS: PhysicalProject processor created with ID: {}",
+                    processor.id()
+                );
             }
             Err(e) => {
                 panic!("Failed to create PhysicalProject processor: {}", e);

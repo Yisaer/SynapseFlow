@@ -8,13 +8,9 @@ pub mod evaluator;
 
 // Re-export main types for convenience
 pub use adapter::{
-    concrete_datatype_to_arrow_type, 
-    scalar_value_to_value, 
-    value_to_scalar_value,
-    flow_schema_to_arrow_schema,
-    create_df_function_call,
-    AdapterError
+    concrete_datatype_to_arrow_type, create_df_function_call, flow_schema_to_arrow_schema,
+    scalar_value_to_value, value_to_scalar_value, AdapterError,
 };
 
-pub use evaluator::DataFusionEvaluator;
 pub use datafusion_common::{DataFusionError, Result as DataFusionResult};
+pub use evaluator::DataFusionEvaluator;

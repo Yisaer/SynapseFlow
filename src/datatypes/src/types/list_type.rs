@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::datatypes::DataType;
 use crate::datatypes::ConcreteDatatype;
+use crate::datatypes::DataType;
 use crate::value::{ListValue, Value};
 
 /// List type, containing element type

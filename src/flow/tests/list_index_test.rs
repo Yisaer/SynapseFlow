@@ -1,9 +1,9 @@
-use datatypes::{ConcreteDatatype, Value, Int32Type, StringType, Schema, ColumnSchema};
-use datatypes::value::ListValue;
 use datatypes::types::ListType;
-use flow::expr::scalar::ScalarExpr;
+use datatypes::value::ListValue;
+use datatypes::{ColumnSchema, ConcreteDatatype, Int32Type, Schema, StringType, Value};
 use flow::expr::evaluator::DataFusionEvaluator;
-use flow::model::{RecordBatch, Column};
+use flow::expr::scalar::ScalarExpr;
+use flow::model::{Column, RecordBatch};
 use std::sync::Arc;
 
 /// Tests basic list index access functionality
@@ -14,32 +14,34 @@ use std::sync::Arc;
 fn test_list_index_simple() {
     // Create list value: [10, 20, 30]
     let list_value = Value::List(ListValue::new(
-        vec![
-            Value::Int32(10),
-            Value::Int32(20),
-            Value::Int32(30),
-        ],
+        vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)],
         Arc::new(ConcreteDatatype::Int32(Int32Type)),
     ));
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(), "list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression: test_table.list_col[0]
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(0), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(0),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
     let evaluator = DataFusionEvaluator::new();
 
     // Evaluate the list index expression using vectorized evaluation
-    let results = list_index_expr.eval_with_collection(&evaluator, &collection).unwrap();
-    
+    let results = list_index_expr
+        .eval_with_collection(&evaluator, &collection)
+        .unwrap();
+
     // Verify result
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], Value::Int32(10));
@@ -53,32 +55,34 @@ fn test_list_index_simple() {
 fn test_list_index_middle() {
     // Create list value: [10, 20, 30]
     let list_value = Value::List(ListValue::new(
-        vec![
-            Value::Int32(10),
-            Value::Int32(20),
-            Value::Int32(30),
-        ],
+        vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)],
         Arc::new(ConcreteDatatype::Int32(Int32Type)),
     ));
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(), "list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression: test_table.list_col[1]
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(1),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
     let evaluator = DataFusionEvaluator::new();
 
     // Evaluate the list index expression using vectorized evaluation
-    let results = list_index_expr.eval_with_collection(&evaluator, &collection).unwrap();
-    
+    let results = list_index_expr
+        .eval_with_collection(&evaluator, &collection)
+        .unwrap();
+
     // Verify result
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], Value::Int32(20));
@@ -92,32 +96,34 @@ fn test_list_index_middle() {
 fn test_list_index_last() {
     // Create list value: [10, 20, 30]
     let list_value = Value::List(ListValue::new(
-        vec![
-            Value::Int32(10),
-            Value::Int32(20),
-            Value::Int32(30),
-        ],
+        vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)],
         Arc::new(ConcreteDatatype::Int32(Int32Type)),
     ));
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(),"list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression: test_table.list_col[2]
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(2), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(2),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
     let evaluator = DataFusionEvaluator::new();
 
     // Evaluate the list index expression using vectorized evaluation
-    let results = list_index_expr.eval_with_collection(&evaluator, &collection).unwrap();
-    
+    let results = list_index_expr
+        .eval_with_collection(&evaluator, &collection)
+        .unwrap();
+
     // Verify result
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], Value::Int32(30));
@@ -129,7 +135,6 @@ fn test_list_index_last() {
 /// Expected result: "world"
 #[test]
 fn test_list_index_string_list() {
-
     // Create list value: ["hello", "world"]
     let list_value = Value::List(ListValue::new(
         vec![
@@ -141,22 +146,28 @@ fn test_list_index_string_list() {
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(), "list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression: test_table.list_col[1]
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(1), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(1),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
     let evaluator = DataFusionEvaluator::new();
 
     // Evaluate the list index expression using vectorized evaluation
-    let results = list_index_expr.eval_with_collection(&evaluator, &collection).unwrap();
-    
+    let results = list_index_expr
+        .eval_with_collection(&evaluator, &collection)
+        .unwrap();
+
     // Verify result
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], Value::String("world".to_string()));
@@ -168,27 +179,26 @@ fn test_list_index_string_list() {
 /// Expected result: ListIndexOutOfBounds error
 #[test]
 fn test_list_index_out_of_bounds() {
-
     // Create list value: [10, 20, 30]
     let list_value = Value::List(ListValue::new(
-        vec![
-            Value::Int32(10),
-            Value::Int32(20),
-            Value::Int32(30),
-        ],
+        vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)],
         Arc::new(ConcreteDatatype::Int32(Int32Type)),
     ));
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(), "list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression: test_table.list_col[3] (out of bounds)
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(3), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(3),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
@@ -196,11 +206,14 @@ fn test_list_index_out_of_bounds() {
 
     // Evaluate the list index expression - should fail
     let results = list_index_expr.eval_with_collection(&evaluator, &collection);
-    
+
     // Verify error
     assert!(results.is_err());
     let error = results.unwrap_err();
-    assert!(matches!(error, flow::expr::func::EvalError::ListIndexOutOfBounds { .. }));
+    assert!(matches!(
+        error,
+        flow::expr::func::EvalError::ListIndexOutOfBounds { .. }
+    ));
 }
 
 /// Tests negative index access error handling
@@ -209,27 +222,26 @@ fn test_list_index_out_of_bounds() {
 /// Expected result: ListIndexOutOfBounds error
 #[test]
 fn test_list_index_negative_index() {
-
     // Create list value: [10, 20, 30]
     let list_value = Value::List(ListValue::new(
-        vec![
-            Value::Int32(10),
-            Value::Int32(20),
-            Value::Int32(30),
-        ],
+        vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)],
         Arc::new(ConcreteDatatype::Int32(Int32Type)),
     ));
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(),"list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression: test_table.list_col[-1] (negative index)
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(-1), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(-1),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
@@ -237,11 +249,14 @@ fn test_list_index_negative_index() {
 
     // Evaluate the list index expression - should fail
     let results = list_index_expr.eval_with_collection(&evaluator, &collection);
-    
+
     // Verify error
     assert!(results.is_err());
     let error = results.unwrap_err();
-    assert!(matches!(error, flow::expr::func::EvalError::ListIndexOutOfBounds { .. }));
+    assert!(matches!(
+        error,
+        flow::expr::func::EvalError::ListIndexOutOfBounds { .. }
+    ));
 }
 
 /// Tests error handling for index access on non-list types
@@ -250,17 +265,20 @@ fn test_list_index_negative_index() {
 /// Expected result: TypeMismatch error
 #[test]
 fn test_list_index_not_list() {
-
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(),"int_col".to_string(),
-        vec![Value::Int32(42)]
+        "test_table".to_string(),
+        "int_col".to_string(),
+        vec![Value::Int32(42)],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression on non-list value: test_table.int_col[0]
     let column_expr = ScalarExpr::column("test_table", "int_col");
-    let index_expr = ScalarExpr::literal(Value::Int64(0), ConcreteDatatype::Int64(datatypes::Int64Type));
+    let index_expr = ScalarExpr::literal(
+        Value::Int64(0),
+        ConcreteDatatype::Int64(datatypes::Int64Type),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
@@ -268,11 +286,14 @@ fn test_list_index_not_list() {
 
     // Evaluate the list index expression - should fail
     let results = list_index_expr.eval_with_collection(&evaluator, &collection);
-    
+
     // Verify error
     assert!(results.is_err());
     let error = results.unwrap_err();
-    assert!(matches!(error, flow::expr::func::EvalError::TypeMismatch { .. }));
+    assert!(matches!(
+        error,
+        flow::expr::func::EvalError::TypeMismatch { .. }
+    ));
 }
 
 /// Tests error handling for invalid index types
@@ -281,27 +302,26 @@ fn test_list_index_not_list() {
 /// Expected result: InvalidIndexType error
 #[test]
 fn test_list_index_invalid_index_type() {
-
     // Create list value: [10, 20, 30]
     let list_value = Value::List(ListValue::new(
-        vec![
-            Value::Int32(10),
-            Value::Int32(20),
-            Value::Int32(30),
-        ],
+        vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)],
         Arc::new(ConcreteDatatype::Int32(Int32Type)),
     ));
 
     // Create a single-row collection for vectorized testing
     let column = Column::new(
-        "test_table".to_string(), "list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
-    let collection = RecordBatch::new( vec![column]).unwrap();
+    let collection = RecordBatch::new(vec![column]).unwrap();
 
     // Create list index expression with non-integer index: test_table.list_col["hello"]
     let column_expr = ScalarExpr::column("test_table", "list_col");
-    let index_expr = ScalarExpr::literal(Value::String("hello".to_string()), ConcreteDatatype::String(StringType));
+    let index_expr = ScalarExpr::literal(
+        Value::String("hello".to_string()),
+        ConcreteDatatype::String(StringType),
+    );
     let list_index_expr = ScalarExpr::list_index(column_expr, index_expr);
 
     // Create evaluator
@@ -309,11 +329,14 @@ fn test_list_index_invalid_index_type() {
 
     // Evaluate the list index expression - should fail
     let results = list_index_expr.eval_with_collection(&evaluator, &collection);
-    
+
     // Verify error
     assert!(results.is_err());
     let error = results.unwrap_err();
-    assert!(matches!(error, flow::expr::func::EvalError::InvalidIndexType { .. }));
+    assert!(matches!(
+        error,
+        flow::expr::func::EvalError::InvalidIndexType { .. }
+    ));
 }
 
 /// Tests dynamic index access functionality
@@ -322,7 +345,6 @@ fn test_list_index_invalid_index_type() {
 /// Expected result: 40
 #[test]
 fn test_list_index_dynamic_index() {
-
     // Create list value: [10, 20, 30, 40, 50]
     let list_value = Value::List(ListValue::new(
         vec![
@@ -337,14 +359,16 @@ fn test_list_index_dynamic_index() {
 
     // Create a single-row collection for vectorized testing with both list and index columns
     let list_column = Column::new(
-        "test_table".to_string(),"list_col".to_string(),
-        vec![list_value]
+        "test_table".to_string(),
+        "list_col".to_string(),
+        vec![list_value],
     );
     let index_column = Column::new(
-        "test_table".to_string(),  "index_col".to_string(),
-        vec![Value::Int64(3)]
+        "test_table".to_string(),
+        "index_col".to_string(),
+        vec![Value::Int64(3)],
     );
-    let collection = RecordBatch::new( vec![list_column, index_column]).unwrap();
+    let collection = RecordBatch::new(vec![list_column, index_column]).unwrap();
 
     // Create list index expression: test_table.list_col[test_table.index_col] where index_col = 3
     let list_expr = ScalarExpr::column("test_table", "list_col");
@@ -355,8 +379,10 @@ fn test_list_index_dynamic_index() {
     let evaluator = DataFusionEvaluator::new();
 
     // Evaluate the list index expression using vectorized evaluation
-    let results = list_index_expr.eval_with_collection(&evaluator, &collection).unwrap();
-    
+    let results = list_index_expr
+        .eval_with_collection(&evaluator, &collection)
+        .unwrap();
+
     // Verify result (index 3 should be 40)
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], Value::Int32(40));

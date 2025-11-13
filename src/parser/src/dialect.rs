@@ -53,7 +53,7 @@ pub fn process_tumblingwindow_in_statement(statement: &mut Statement) -> Result<
             select.group_by = new_group_by;
         }
     }
-    
+
     Ok(())
 }
 
@@ -62,7 +62,7 @@ fn parse_group_by_with_tumblingwindow(group_by: &GroupByExpr) -> Result<GroupByE
     match group_by {
         GroupByExpr::Expressions(exprs) => {
             let mut new_exprs = Vec::new();
-            
+
             for expr in exprs {
                 if let Some(window_expr) = parse_tumblingwindow_expr(expr)? {
                     // Convert tumblingwindow function to a special window field
@@ -71,7 +71,7 @@ fn parse_group_by_with_tumblingwindow(group_by: &GroupByExpr) -> Result<GroupByE
                     new_exprs.push(expr.clone());
                 }
             }
-            
+
             Ok(GroupByExpr::Expressions(new_exprs))
         }
         _ => Ok(group_by.clone()),
@@ -82,7 +82,7 @@ fn parse_group_by_with_tumblingwindow(group_by: &GroupByExpr) -> Result<GroupByE
 fn parse_tumblingwindow_expr(expr: &Expr) -> Result<Option<Expr>, ParserError> {
     if let Expr::Function(function) = expr {
         let function_name = function.name.to_string().to_lowercase();
-        
+
         if function_name == "tumblingwindow" {
             // Parse the tumblingwindow function into a TimeWindow structure
             match parse_tumbling_window(function) {
@@ -105,8 +105,6 @@ fn parse_tumblingwindow_expr(expr: &Expr) -> Result<Option<Expr>, ParserError> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,13 +114,13 @@ mod tests {
     fn test_parse_tumblingwindow() {
         let sql = "SELECT * FROM stream GROUP BY tumblingwindow('ss', 10)";
         let dialect = StreamDialect::new();
-        
+
         let mut statements = Parser::parse_sql(&dialect, sql).unwrap();
         assert_eq!(statements.len(), 1);
-        
+
         // Process the statement to handle tumblingwindow
         process_tumblingwindow_in_statement(&mut statements[0]).unwrap();
-        
+
         // Verify the statement was processed correctly
         match &statements[0] {
             Statement::Query(query) => {
@@ -139,8 +137,14 @@ mod tests {
                                     // Try to parse it as a TimeWindow
                                     match parse_tumbling_window(func) {
                                         Ok(window) => {
-                                            println!("Successfully parsed TimeWindow: {:?}", window);
-                                            assert_eq!(window.window_type, window::WindowType::Tumbling);
+                                            println!(
+                                                "Successfully parsed TimeWindow: {:?}",
+                                                window
+                                            );
+                                            assert_eq!(
+                                                window.window_type,
+                                                window::WindowType::Tumbling
+                                            );
                                             assert_eq!(window.time_unit, "ss");
                                             assert_eq!(window.size, 10);
                                         }
