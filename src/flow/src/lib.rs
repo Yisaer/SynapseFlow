@@ -2,6 +2,8 @@ pub mod expr;
 pub mod model;
 pub mod planner;
 pub mod processor;
+pub mod connector;
+pub mod codec;
 
 pub use expr::{
     create_df_function_call, BinaryFunc, ConcatFunc, ConversionError,
@@ -18,6 +20,8 @@ pub use processor::{
     ControlSourceProcessor, DataSourceProcessor, ResultSinkProcessor,
     StreamData, ControlSignal, Processor, ProcessorError
 };
+pub use connector::{SubscriptionSource, MqttSubscriptionSource, MqttSourceConfig};
+pub use codec::Decoder;
 
 use processor::create_processor_pipeline;
 use processor::ProcessorPipeline;
