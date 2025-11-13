@@ -22,7 +22,7 @@ pub use control_source_processor::ControlSourceProcessor;
 pub use datasource_processor::DataSourceProcessor;
 pub use filter_processor::FilterProcessor;
 pub use processor_builder::{
-    create_processor_pipeline, create_processor_pipeline_with_sinks, ProcessorPipeline,
+    create_processor_pipeline, create_processor_pipeline_with_log_sink, ProcessorPipeline,
 };
 pub use project_processor::ProjectProcessor;
 pub use result_collect_processor::ResultCollectProcessor;

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use datatypes::Value;
 use flow::codec::JsonDecoder;
 use flow::connector::MockSourceConnector;
-use flow::create_pipeline;
+use flow::create_pipeline_with_log_sink;
 use flow::processor::processor_builder::PlanProcessor;
 use flow::processor::StreamData;
 use flow::Processor;
@@ -14,8 +14,9 @@ use tokio::time::{timeout, Duration};
 
 #[tokio::test]
 async fn test_mock_pipeline_with_datasource_connector() {
-    let mut pipeline = create_pipeline("SELECT a + 1 AS a_plus_1, b + 2 AS b_plus_2 FROM stream")
-        .expect("pipeline creation failed");
+    let mut pipeline =
+        create_pipeline_with_log_sink("SELECT a + 1 AS a_plus_1, b + 2 AS b_plus_2 FROM stream")
+            .expect("pipeline creation failed");
 
     let mut mock_handle = None;
 

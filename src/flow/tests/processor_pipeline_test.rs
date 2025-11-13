@@ -1,7 +1,7 @@
 use flow::planner::physical::PhysicalDataSource;
 use flow::processor::{
-    create_processor_pipeline, create_processor_pipeline_with_sinks, ControlSignal, SinkProcessor,
-    StreamData,
+    create_processor_pipeline, create_processor_pipeline_with_log_sink, ControlSignal,
+    SinkProcessor, StreamData,
 };
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
@@ -11,8 +11,8 @@ async fn test_create_processor_pipeline_with_datasource() {
     let physical_plan: Arc<dyn flow::planner::physical::PhysicalPlan> =
         Arc::new(PhysicalDataSource::new("test_source".to_string(), 0));
 
-    let mut pipeline =
-        create_processor_pipeline(physical_plan).expect("create_processor_pipeline should succeed");
+    let mut pipeline = create_processor_pipeline_with_log_sink(physical_plan)
+        .expect("create_processor_pipeline_with_log_sink should succeed");
 
     pipeline.start();
 
@@ -56,7 +56,7 @@ async fn test_create_processor_pipeline_with_multiple_sinks() {
 
     let sinks = vec![SinkProcessor::new("sink_a"), SinkProcessor::new("sink_b")];
 
-    let mut pipeline = create_processor_pipeline_with_sinks(physical_plan, sinks)
+    let mut pipeline = create_processor_pipeline(physical_plan, sinks)
         .expect("pipeline with sinks should succeed");
 
     pipeline.start();

@@ -1,12 +1,17 @@
-//! Tests for create_pipeline function
+//! Tests for the public pipeline creation helpers.
 //!
-//! This module tests the high-level create_pipeline function that creates
-//! a complete processing pipeline from SQL queries.
+//! This module exercises both `create_pipeline_with_log_sink` (default/testing)
+//! and the customizable `create_pipeline` API that accepts user-defined sinks.
 
 use datatypes::Value;
+use flow::connector::MockSinkConnector;
 use flow::create_pipeline;
+use flow::create_pipeline_with_log_sink;
+use flow::encoder::JsonEncoder;
 use flow::model::{Column, RecordBatch as FlowRecordBatch};
-use flow::processor::StreamData;
+use flow::processor::{SinkProcessor, StreamData};
+use serde_json::json;
+use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
 /// Test case structure for table-driven tests
@@ -31,7 +36,7 @@ async fn run_test_case(test_case: TestCase) {
     println!("Running test: {}", test_case.name);
 
     // Create pipeline from SQL
-    let mut pipeline = create_pipeline(test_case.sql).expect(&format!(
+    let mut pipeline = create_pipeline_with_log_sink(test_case.sql).expect(&format!(
         "Failed to create pipeline for: {}",
         test_case.name
     ));
@@ -269,6 +274,37 @@ async fn test_create_pipeline_various_queries() {
     }
 }
 
+#[tokio::test]
+async fn test_create_pipeline_with_custom_sink_connectors() {
+    let mut sink = SinkProcessor::new("custom_sink");
+    let (connector, mut handle) = MockSinkConnector::new("custom_sink_connector");
+    sink.add_connector(Box::new(connector), Arc::new(JsonEncoder::new("json")));
+
+    let mut pipeline = create_pipeline("SELECT a FROM stream", vec![sink])
+        .expect("pipeline with custom sink should succeed");
+
+    pipeline.start();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let column = Column::new("".to_string(), "a".to_string(), vec![Value::Int64(10)]);
+    let batch = FlowRecordBatch::new(vec![column]).expect("record batch");
+    pipeline
+        .input
+        .send(StreamData::Collection(Box::new(batch)))
+        .await
+        .expect("send data");
+
+    let payload = timeout(Duration::from_secs(1), handle.recv())
+        .await
+        .expect("sink payload timeout")
+        .expect("sink payload missing");
+    let json_payload: serde_json::Value =
+        serde_json::from_slice(&payload).expect("valid json payload");
+    assert_eq!(json_payload, json!({"a":10}));
+
+    pipeline.close().await.expect("close pipeline");
+}
+
 /// Test create_pipeline with invalid SQL
 #[tokio::test]
 async fn test_create_pipeline_invalid_sql() {
@@ -280,7 +316,7 @@ async fn test_create_pipeline_invalid_sql() {
     ];
 
     for sql in invalid_sql_cases {
-        let result = create_pipeline(sql);
+        let result = create_pipeline_with_log_sink(sql);
         assert!(result.is_err(), "Should fail with invalid SQL: {}", sql);
     }
 }

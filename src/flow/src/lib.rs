@@ -25,43 +25,56 @@ pub use processor::{
 };
 
 use planner::logical::create_logical_plan;
-use processor::create_processor_pipeline;
-use processor::ProcessorPipeline;
+use processor::{
+    create_processor_pipeline, create_processor_pipeline_with_log_sink, ProcessorPipeline,
+};
+use std::sync::Arc;
 
-/// Create a processor pipeline from SQL query
+fn build_physical_plan_from_sql(
+    sql: &str,
+) -> Result<Arc<dyn planner::physical::PhysicalPlan>, Box<dyn std::error::Error>> {
+    let select_stmt = parser::parse_sql(sql)?;
+    let logical_plan = create_logical_plan(select_stmt)?;
+    let physical_plan = create_physical_plan(logical_plan)?;
+    Ok(physical_plan)
+}
+
+/// Create a processor pipeline from SQL, wiring it to the provided sink processors.
 ///
-/// This function provides a high-level interface to create a complete processing pipeline
-/// from a SQL query string. It handles the entire process from SQL parsing to pipeline creation.
-///
-/// # Arguments
-/// * `sql` - The SQL query string
-///
-/// # Returns
-/// A Result containing the ProcessorPipeline if successful, or an error if any step fails
+/// Use this function when you want to configure one or more [`SinkProcessor`] instances
+/// (each with its own connectors/encoders) and plug them into the compiled physical plan.
 ///
 /// # Example
 /// ```no_run
-/// use flow::create_pipeline;
+/// use flow::{
+///     connector::MockSinkConnector,
+///     create_pipeline,
+///     encoder::JsonEncoder,
+///     processor::SinkProcessor,
+/// };
+/// use std::sync::Arc;
 ///
-/// # #[tokio::main]
-/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let pipeline = create_pipeline("SELECT a + 1, b + 2 FROM stream")?;
-/// // Use the pipeline...
-/// # Ok(())
-/// # }
+/// # fn demo() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut sink = SinkProcessor::new("custom_sink");
+/// let (connector, _handle) = MockSinkConnector::new("custom");
+/// sink.add_connector(Box::new(connector), Arc::new(JsonEncoder::new("json")));
+/// let pipeline = create_pipeline("SELECT a FROM stream", vec![sink])?;
+/// # Ok(()) }
 /// ```
-pub fn create_pipeline(sql: &str) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
-    // Parse SQL
-    let select_stmt = parser::parse_sql(sql)?;
+pub fn create_pipeline(
+    sql: &str,
+    sink_processors: Vec<SinkProcessor>,
+) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
+    let physical_plan = build_physical_plan_from_sql(sql)?;
+    let pipeline = create_processor_pipeline(physical_plan, sink_processors)?;
+    Ok(pipeline)
+}
 
-    // Create logical plan
-    let logical_plan = create_logical_plan(select_stmt)?;
-
-    // Create physical plan
-    let physical_plan = create_physical_plan(logical_plan)?;
-
-    // Create processor pipeline
-    let pipeline = create_processor_pipeline(physical_plan)?;
-
+/// Convenience helper for tests and demos that just need a logging mock sink.
+pub fn create_pipeline_with_log_sink(
+    sql: &str,
+) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
+    let physical_plan = build_physical_plan_from_sql(sql)?;
+    let pipeline = create_processor_pipeline_with_log_sink(physical_plan)?;
     Ok(pipeline)
 }

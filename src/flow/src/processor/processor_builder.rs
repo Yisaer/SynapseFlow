@@ -3,6 +3,8 @@
 //! This module provides utilities to build processor pipelines from PhysicalPlan,
 //! connecting ControlSourceProcessor outputs to leaf nodes (nodes without children).
 
+use crate::connector::MockSinkConnector;
+use crate::encoder::JsonEncoder;
 use crate::planner::physical::{PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject};
 use crate::processor::{
     ControlSourceProcessor, DataSourceProcessor, FilterProcessor, Processor, ProcessorError,
@@ -318,7 +320,7 @@ fn connect_processors(
     Ok(())
 }
 
-/// Create a complete processor pipeline from a PhysicalPlan tree
+/// Create a complete processor pipeline from a PhysicalPlan tree and custom sinks.
 ///
 /// This function:
 /// 1. Recursively traverses the PhysicalPlan tree
@@ -326,24 +328,8 @@ fn connect_processors(
 /// 3. Connects processors based on tree structure:
 ///    - ControlSourceProcessor output -> leaf nodes input
 ///    - Children outputs -> parent input
-/// 4. Connects root node output -> ResultCollectProcessor input
-///
-/// # Arguments
-/// * `physical_plan` - The root PhysicalPlan node (data flow end point)
-///
-/// # Returns
-/// A ProcessorPipeline containing all connected processors
+/// 4. Connects root node output -> provided SinkProcessors -> ResultCollectProcessor inputs
 pub fn create_processor_pipeline(
-    physical_plan: Arc<dyn PhysicalPlan>,
-) -> Result<ProcessorPipeline, ProcessorError> {
-    create_processor_pipeline_with_sinks(physical_plan, vec![SinkProcessor::new("sink_0")])
-}
-
-/// Create a processor pipeline with explicitly provided sink processors.
-///
-/// Supplying multiple sinks allows the PhysicalPlan root output to be fanned
-/// out to different connectors that operate in parallel.
-pub fn create_processor_pipeline_with_sinks(
     physical_plan: Arc<dyn PhysicalPlan>,
     mut sink_processors: Vec<SinkProcessor>,
 ) -> Result<ProcessorPipeline, ProcessorError> {
@@ -400,6 +386,18 @@ pub fn create_processor_pipeline_with_sinks(
         result_sink,
         handles: Vec::new(),
     })
+}
+
+/// Convenience helper that wires a PhysicalPlan into a pipeline backed by a logging mock sink.
+pub fn create_processor_pipeline_with_log_sink(
+    physical_plan: Arc<dyn PhysicalPlan>,
+) -> Result<ProcessorPipeline, ProcessorError> {
+    let mut log_sink = SinkProcessor::new("log_sink");
+    let (connector, _handle) = MockSinkConnector::new("log_sink_connector");
+    let encoder = Arc::new(JsonEncoder::new("log_sink_encoder"));
+    log_sink.add_connector(Box::new(connector), encoder);
+
+    create_processor_pipeline(physical_plan, vec![log_sink])
 }
 
 #[cfg(test)]

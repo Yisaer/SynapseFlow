@@ -53,13 +53,19 @@ impl SinkConnector for MockSinkConnector {
     }
 
     async fn send(&mut self, payload: &[u8]) -> Result<(), SinkConnectorError> {
-        match self.sender.as_ref() {
-            Some(sender) => sender
-                .send(payload.to_vec())
-                .await
-                .map_err(|_| SinkConnectorError::Unavailable(self.id.clone())),
-            None => Err(SinkConnectorError::Unavailable(self.id.clone())),
+        println!(
+            "[mock_sink:{}] received payload: {}",
+            self.id,
+            String::from_utf8_lossy(payload)
+        );
+
+        if let Some(sender) = self.sender.clone() {
+            if sender.send(payload.to_vec()).await.is_err() {
+                self.sender = None;
+            }
         }
+
+        Ok(())
     }
 
     async fn close(&mut self) -> Result<(), SinkConnectorError> {
