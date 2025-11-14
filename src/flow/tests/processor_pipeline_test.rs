@@ -11,7 +11,7 @@ async fn test_create_processor_pipeline_with_datasource() {
     let physical_plan: Arc<dyn flow::planner::physical::PhysicalPlan> =
         Arc::new(PhysicalDataSource::new("test_source".to_string(), 0));
 
-    let mut pipeline = create_processor_pipeline_with_log_sink(physical_plan)
+    let mut pipeline = create_processor_pipeline_with_log_sink(physical_plan, true)
         .expect("create_processor_pipeline_with_log_sink should succeed");
 
     pipeline.start();
@@ -31,7 +31,11 @@ async fn test_create_processor_pipeline_with_datasource() {
         .await
         .expect("send control signal");
 
-    let received_signal = timeout(Duration::from_secs(1), pipeline.output.recv())
+    let mut output = pipeline
+        .take_output()
+        .expect("pipeline should expose an output receiver");
+
+    let received_signal = timeout(Duration::from_secs(1), output.recv())
         .await
         .expect("receive within timeout")
         .expect("output should produce a value");
@@ -54,7 +58,11 @@ async fn test_create_processor_pipeline_with_multiple_sinks() {
     let physical_plan: Arc<dyn flow::planner::physical::PhysicalPlan> =
         Arc::new(PhysicalDataSource::new("test_source_multi".to_string(), 0));
 
-    let sinks = vec![SinkProcessor::new("sink_a"), SinkProcessor::new("sink_b")];
+    let mut sink_a = SinkProcessor::new("sink_a");
+    sink_a.enable_result_forwarding();
+    let mut sink_b = SinkProcessor::new("sink_b");
+    sink_b.enable_result_forwarding();
+    let sinks = vec![sink_a, sink_b];
 
     let mut pipeline = create_processor_pipeline(physical_plan, sinks)
         .expect("pipeline with sinks should succeed");
@@ -74,7 +82,11 @@ async fn test_create_processor_pipeline_with_multiple_sinks() {
         .await
         .expect("send control signal");
 
-    let received_signal = timeout(Duration::from_secs(1), pipeline.output.recv())
+    let mut output = pipeline
+        .take_output()
+        .expect("pipeline should expose an output receiver");
+
+    let received_signal = timeout(Duration::from_secs(1), output.recv())
         .await
         .expect("receive within timeout")
         .expect("output should produce a value");

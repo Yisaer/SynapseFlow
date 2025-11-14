@@ -36,7 +36,7 @@ async fn run_test_case(test_case: TestCase) {
     println!("Running test: {}", test_case.name);
 
     // Create pipeline from SQL
-    let mut pipeline = create_pipeline_with_log_sink(test_case.sql).expect(&format!(
+    let mut pipeline = create_pipeline_with_log_sink(test_case.sql, true).expect(&format!(
         "Failed to create pipeline for: {}",
         test_case.name
     ));
@@ -64,8 +64,11 @@ async fn run_test_case(test_case: TestCase) {
         .expect(&format!("Failed to send test data for: {}", test_case.name));
 
     // Receive and verify results
+    let mut output = pipeline
+        .take_output()
+        .expect("pipeline should expose an output receiver");
     let timeout_duration = Duration::from_secs(5);
-    let received_data = timeout(timeout_duration, pipeline.output.recv())
+    let received_data = timeout(timeout_duration, output.recv())
         .await
         .expect(&format!(
             "Timeout waiting for output for: {}",
@@ -348,7 +351,7 @@ async fn test_create_pipeline_invalid_sql() {
     ];
 
     for sql in invalid_sql_cases {
-        let result = create_pipeline_with_log_sink(sql);
+        let result = create_pipeline_with_log_sink(sql, false);
         assert!(result.is_err(), "Should fail with invalid SQL: {}", sql);
     }
 }

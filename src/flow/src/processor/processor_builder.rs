@@ -75,15 +75,15 @@ pub struct ProcessorPipeline {
     /// Pipeline input channel (send data into ControlSourceProcessor)
     pub input: mpsc::Sender<StreamData>,
     /// Pipeline output channel (receive data from ResultCollectProcessor)
-    pub output: mpsc::Receiver<StreamData>,
+    pub output: Option<mpsc::Receiver<StreamData>>,
     /// Control source processor (data head)
     pub control_source: ControlSourceProcessor,
     /// Middle processors created from PhysicalPlan (various types)
     pub middle_processors: Vec<PlanProcessor>,
     /// Sink processors wired to the PhysicalPlan root (fan-out for connectors)
     pub sink_processors: Vec<SinkProcessor>,
-    /// Result sink processor (data tail)
-    pub result_sink: ResultCollectProcessor,
+    /// Result sink processor (data tail) if downstream forwarding is enabled
+    pub result_sink: Option<ResultCollectProcessor>,
     /// Broadcast sender feeding the control source input
     control_input_sender: broadcast::Sender<StreamData>,
     /// Buffered receiver that bridges external input into the control input sender
@@ -117,7 +117,9 @@ impl ProcessorPipeline {
         for sink in &mut self.sink_processors {
             self.handles.push(sink.start());
         }
-        self.handles.push(self.result_sink.start());
+        if let Some(result_sink) = &mut self.result_sink {
+            self.handles.push(result_sink.start());
+        }
     }
 
     /// Gracefully close the pipeline by sending StreamEnd and awaiting all tasks.
@@ -167,6 +169,11 @@ impl ProcessorPipeline {
         self.control_source
             .send_stream_data(processor_id, data)
             .await
+    }
+
+    /// Take ownership of the pipeline's output receiver.
+    pub fn take_output(&mut self) -> Option<mpsc::Receiver<StreamData>> {
+        self.output.take()
     }
 }
 
@@ -388,19 +395,25 @@ pub fn create_processor_pipeline(
         sink.add_input(receiver);
     }
 
-    let mut result_sink = ResultCollectProcessor::new("result_sink");
+    let mut result_sink = None;
+    let mut pipeline_output_receiver = None;
+    let mut sink_outputs = Vec::new();
     for sink in sink_processors.iter_mut() {
-        let receiver = sink.subscribe_output().ok_or_else(|| {
-            ProcessorError::InvalidConfiguration(format!(
-                "Sink processor {} missing broadcast output",
-                sink.id()
-            ))
-        })?;
-        result_sink.add_input(receiver);
+        if let Some(receiver) = sink.subscribe_output() {
+            sink_outputs.push(receiver);
+        }
     }
 
-    let (result_output_sender, pipeline_output_receiver) = mpsc::channel(100);
-    result_sink.set_output(result_output_sender);
+    if !sink_outputs.is_empty() {
+        let mut collector = ResultCollectProcessor::new("result_sink");
+        for receiver in sink_outputs {
+            collector.add_input(receiver);
+        }
+        let (result_output_sender, pipeline_output_rx) = mpsc::channel(100);
+        collector.set_output(result_output_sender);
+        result_sink = Some(collector);
+        pipeline_output_receiver = Some(pipeline_output_rx);
+    }
 
     let middle_processors = processor_map.get_all_processors();
 
@@ -420,8 +433,12 @@ pub fn create_processor_pipeline(
 /// Convenience helper that wires a PhysicalPlan into a pipeline backed by a logging mock sink.
 pub fn create_processor_pipeline_with_log_sink(
     physical_plan: Arc<dyn PhysicalPlan>,
+    forward_to_result: bool,
 ) -> Result<ProcessorPipeline, ProcessorError> {
     let mut log_sink = SinkProcessor::new("log_sink");
+    if forward_to_result {
+        log_sink.enable_result_forwarding();
+    }
     let (connector, _handle) = MockSinkConnector::new("log_sink_connector");
     let encoder = Arc::new(JsonEncoder::new("log_sink_encoder"));
     log_sink.add_connector(Box::new(connector), encoder);

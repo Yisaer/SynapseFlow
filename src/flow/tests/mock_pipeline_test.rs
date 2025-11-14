@@ -14,9 +14,11 @@ use tokio::time::{timeout, Duration};
 
 #[tokio::test]
 async fn test_mock_pipeline_with_datasource_connector() {
-    let mut pipeline =
-        create_pipeline_with_log_sink("SELECT a + 1 AS a_plus_1, b + 2 AS b_plus_2 FROM stream")
-            .expect("pipeline creation failed");
+    let mut pipeline = create_pipeline_with_log_sink(
+        "SELECT a + 1 AS a_plus_1, b + 2 AS b_plus_2 FROM stream",
+        true,
+    )
+    .expect("pipeline creation failed");
 
     let mut mock_handle = None;
 
@@ -40,7 +42,11 @@ async fn test_mock_pipeline_with_datasource_connector() {
         .await
         .expect("failed to send mock payload");
 
-    let result = timeout(Duration::from_secs(5), pipeline.output.recv())
+    let mut output = pipeline
+        .take_output()
+        .expect("pipeline should expose an output receiver");
+
+    let result = timeout(Duration::from_secs(5), output.recv())
         .await
         .expect("timed out waiting for output")
         .expect("pipeline output closed unexpectedly");

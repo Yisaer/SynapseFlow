@@ -1,17 +1,18 @@
+mod metrics;
+
 use std::env;
 use std::net::SocketAddr;
 use std::process;
 use std::sync::Arc;
 
+use crate::metrics::{CPU_USAGE_GAUGE, MEMORY_USAGE_GAUGE};
 use flow::codec::JsonDecoder;
 use flow::connector::{MqttSinkConfig, MqttSinkConnector, MqttSourceConfig, MqttSourceConnector};
 use flow::processor::processor_builder::PlanProcessor;
 use flow::processor::{ProcessorPipeline, SinkProcessor};
 use flow::JsonEncoder;
 use flow::Processor;
-use once_cell::sync::Lazy;
-use prometheus::{register_counter, register_gauge, Counter, Gauge};
-use sysinfo::System;
+use sysinfo::{Pid, System};
 use tokio::time::{sleep, Duration};
 
 const DEFAULT_BROKER_URL: &str = "tcp://127.0.0.1:1883";
@@ -20,22 +21,6 @@ const SINK_TOPIC: &str = "/yisa/data2";
 const MQTT_QOS: u8 = 1;
 const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9898";
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 5;
-
-static CPU_TIME_COUNTER: Lazy<Counter> = Lazy::new(|| {
-    register_counter!(
-        "process_cpu_seconds_total",
-        "Total CPU time consumed by the synapse-flow process in seconds"
-    )
-    .expect("create cpu counter")
-});
-
-static MEMORY_USAGE_GAUGE: Lazy<Gauge> = Lazy::new(|| {
-    register_gauge!(
-        "synapse_memory_used_bytes",
-        "Resident memory used by the process in bytes"
-    )
-    .expect("create memory gauge")
-});
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,6 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut sink = SinkProcessor::new("mqtt_sink");
+    sink.disable_result_forwarding();
     let sink_config = MqttSinkConfig::new("mqtt_sink", DEFAULT_BROKER_URL, SINK_TOPIC, MQTT_QOS);
     let sink_connector = MqttSinkConnector::new("mqtt_sink_connector", sink_config);
     sink.add_connector(
@@ -56,6 +42,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut pipeline = flow::create_pipeline(&sql, vec![sink])?;
     attach_mqtt_sources(&mut pipeline, DEFAULT_BROKER_URL, SOURCE_TOPIC, MQTT_QOS)?;
+
+    if let Some(mut output_rx) = pipeline.take_output() {
+        tokio::spawn(async move {
+            while let Some(message) = output_rx.recv().await {
+                println!("[PipelineOutput] {}", message.description());
+            }
+            println!("[PipelineOutput] channel closed");
+        });
+    } else {
+        println!("[PipelineOutput] output channel unavailable; nothing will be drained");
+    }
 
     pipeline.start();
     println!("Pipeline running between MQTT topics {SOURCE_TOPIC} -> {SINK_TOPIC} WITH SQL {sql}.");
@@ -83,19 +80,15 @@ async fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         let mut system = System::new();
-        let pid = sysinfo::Pid::from_u32(process::id());
+        let pid = Pid::from_u32(process::id());
         loop {
             system.refresh_process(pid);
             if let Some(proc_info) = system.process(pid) {
-                let delta_secs = (proc_info.cpu_usage() as f64 / 100.0) * poll_interval as f64;
-                if delta_secs.is_finite() && delta_secs >= 0.0 {
-                    CPU_TIME_COUNTER.inc_by(delta_secs);
-                }
-
-                let rss_bytes = proc_info.memory() as f64 * 1024.0;
-                MEMORY_USAGE_GAUGE.set(rss_bytes);
+                CPU_USAGE_GAUGE.set(proc_info.cpu_usage() as i64);
+                MEMORY_USAGE_GAUGE.set(proc_info.memory() as i64);
             } else {
-                MEMORY_USAGE_GAUGE.set(0.0);
+                CPU_USAGE_GAUGE.set(0);
+                MEMORY_USAGE_GAUGE.set(0);
             }
 
             sleep(Duration::from_secs(poll_interval)).await;

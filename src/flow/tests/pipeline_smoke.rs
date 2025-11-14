@@ -6,7 +6,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn pipeline_smoke_receives_output() {
     let sql = "SELECT a + 1 FROM stream";
-    let mut pipeline = flow::create_pipeline_with_log_sink(sql).expect("pipeline");
+    let mut pipeline = flow::create_pipeline_with_log_sink(sql, true).expect("pipeline");
     pipeline.start();
 
     let column = Column::new(
@@ -22,7 +22,11 @@ async fn pipeline_smoke_receives_output() {
         .await
         .expect("send");
 
-    let data = tokio::time::timeout(Duration::from_secs(1), pipeline.output.recv())
+    let mut output = pipeline
+        .take_output()
+        .expect("pipeline should expose an output receiver");
+
+    let data = tokio::time::timeout(Duration::from_secs(1), output.recv())
         .await
         .expect("timeout")
         .expect("no data");

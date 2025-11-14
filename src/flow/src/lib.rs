@@ -70,8 +70,9 @@ pub fn create_pipeline(
 /// Convenience helper for tests and demos that just need a logging mock sink.
 pub fn create_pipeline_with_log_sink(
     sql: &str,
+    forward_to_result: bool,
 ) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
     let physical_plan = build_physical_plan_from_sql(sql)?;
-    let pipeline = create_processor_pipeline_with_log_sink(physical_plan)?;
+    let pipeline = create_processor_pipeline_with_log_sink(physical_plan, forward_to_result)?;
     Ok(pipeline)
 }

@@ -61,6 +61,7 @@ pub struct SinkProcessor {
     inputs: Vec<broadcast::Receiver<StreamData>>,
     output: broadcast::Sender<StreamData>,
     connectors: Vec<ConnectorBinding>,
+    forward_to_result: bool,
 }
 
 static SINK_RECORDS_IN: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -90,7 +91,18 @@ impl SinkProcessor {
             inputs: Vec::new(),
             output,
             connectors: Vec::new(),
+            forward_to_result: false,
         }
+    }
+
+    /// Enable forwarding collections/control signals to downstream consumers (tests).
+    pub fn enable_result_forwarding(&mut self) {
+        self.forward_to_result = true;
+    }
+
+    /// Disable forwarding to downstream consumers (default for production).
+    pub fn disable_result_forwarding(&mut self) {
+        self.forward_to_result = false;
     }
 
     /// Register a connector + encoder pair.
@@ -143,6 +155,7 @@ mod tests {
     #[tokio::test]
     async fn sink_processor_encodes_and_forwards_collections() {
         let mut sink = SinkProcessor::new("sink_test");
+        sink.enable_result_forwarding();
         let (input_tx, input_rx) = broadcast::channel(10);
         sink.add_input(input_rx);
         let mut output_rx = sink.subscribe_output().expect("output stream");
@@ -197,7 +210,11 @@ impl Processor for SinkProcessor {
 
     fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
         let mut input_streams = fan_in_streams(std::mem::take(&mut self.inputs));
-        let output = self.output.clone();
+        let output = if self.forward_to_result {
+            Some(self.output.clone())
+        } else {
+            None
+        };
 
         let mut connectors = std::mem::take(&mut self.connectors);
         let processor_id = self.id.clone();
@@ -226,19 +243,23 @@ impl Processor for SinkProcessor {
                     if let Err(err) =
                         Self::handle_collection(&processor_id, &mut connectors, collection).await
                     {
-                        let error = StreamData::error(
-                            StreamError::new(err.to_string()).with_source(processor_id.clone()),
-                        );
-                        output
-                            .send(error)
-                            .map_err(|_| ProcessorError::ChannelClosed)?;
+                        if let Some(output_sender) = &output {
+                            let error = StreamData::error(
+                                StreamError::new(err.to_string()).with_source(processor_id.clone()),
+                            );
+                            output_sender
+                                .send(error)
+                                .map_err(|_| ProcessorError::ChannelClosed)?;
+                        }
                         return Err(err);
                     }
                 }
 
-                output
-                    .send(data.clone())
-                    .map_err(|_| ProcessorError::ChannelClosed)?;
+                if let Some(output_sender) = &output {
+                    output_sender
+                        .send(data.clone())
+                        .map_err(|_| ProcessorError::ChannelClosed)?;
+                }
 
                 if data.is_terminal() {
                     println!(
@@ -258,7 +279,11 @@ impl Processor for SinkProcessor {
     }
 
     fn subscribe_output(&self) -> Option<broadcast::Receiver<StreamData>> {
-        Some(self.output.subscribe())
+        if self.forward_to_result {
+            Some(self.output.subscribe())
+        } else {
+            None
+        }
     }
 
     fn add_input(&mut self, receiver: broadcast::Receiver<StreamData>) {
