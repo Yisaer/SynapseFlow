@@ -99,12 +99,38 @@ impl Collection for RecordBatch {
         // self.debug_print();
 
         let num_rows = self.num_rows();
-        let mut projected_columns = Vec::with_capacity(fields.len());
+        let mut projected_columns = Vec::new();
 
         // Create DataFusion evaluator for expression evaluation
         let evaluator = DataFusionEvaluator::new();
 
         for field in fields {
+            if let ScalarExpr::Wildcard { source_name } = &field.compiled_expr {
+                let matched_columns: Vec<Column> = self
+                    .columns()
+                    .iter()
+                    .filter(|column| match source_name {
+                        Some(prefix) => column.source_name() == prefix,
+                        None => !column.source_name().is_empty(),
+                    })
+                    .cloned()
+                    .collect();
+
+                if matched_columns.is_empty() {
+                    let qualifier = source_name
+                        .as_ref()
+                        .map(|prefix| format!("{}.*", prefix))
+                        .unwrap_or_else(|| "*".to_string());
+                    return Err(CollectionError::Other(format!(
+                        "Failed to evaluate expression for field '{}': Column not found: {}",
+                        field.field_name, qualifier
+                    )));
+                }
+
+                projected_columns.extend(matched_columns);
+                continue;
+            }
+
             // Evaluate the compiled expression using vectorized evaluation
             // If evaluation fails, return the error immediately
             let evaluated_values = field
