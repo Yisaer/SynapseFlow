@@ -2,6 +2,8 @@
 
 use crate::connector::mqtt_client::{acquire_shared_client, SharedMqttEvent};
 use crate::connector::{ConnectorError, ConnectorEvent, ConnectorStream, SourceConnector};
+use once_cell::sync::Lazy;
+use prometheus::{register_int_counter_vec, IntCounterVec};
 use rumqttc::{AsyncClient, ConnectionError, Event, MqttOptions, Packet, QoS, Transport};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -59,6 +61,24 @@ pub struct MqttSourceConnector {
     receiver: Option<mpsc::Receiver<Result<ConnectorEvent, ConnectorError>>>,
 }
 
+static MQTT_SOURCE_RECORDS_IN: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "mqtt_source_records_in_total",
+        "Number of records received from MQTT sources",
+        &["connector"]
+    )
+    .expect("create mqtt source records_in counter vec")
+});
+
+static MQTT_SOURCE_RECORDS_OUT: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "mqtt_source_records_out_total",
+        "Number of records emitted downstream by MQTT sources",
+        &["connector"]
+    )
+    .expect("create mqtt source records_out counter vec")
+});
+
 impl MqttSourceConnector {
     pub fn new(id: impl Into<String>, config: MqttSourceConfig) -> Self {
         Self {
@@ -84,29 +104,24 @@ impl SourceConnector for MqttSourceConnector {
         let connector_id = self.id.clone();
 
         if let Some(connector_key) = config.connector_key.clone() {
-            let connector_id = connector_id.clone();
+            let metrics_id = connector_id.clone();
             tokio::spawn(async move {
                 match acquire_shared_client(&connector_key).await {
                     Ok(shared_client) => {
-                        println!(
-                            "[MqttSourceConnector:{}] connected via shared client (key={})",
-                            connector_id, connector_key
-                        );
                         let mut events = shared_client.subscribe();
                         while let Ok(event) = events.recv().await {
                             match event {
                                 Ok(SharedMqttEvent::Payload(payload)) => {
-                                    println!(
-                                        "[MqttSourceConnector:{}] received {} bytes",
-                                        connector_id,
-                                        payload.len()
-                                    );
-                                    if sender
-                                        .send(Ok(ConnectorEvent::Payload(payload)))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
+                                    MQTT_SOURCE_RECORDS_IN
+                                        .with_label_values(&[metrics_id.as_str()])
+                                        .inc();
+                                    match sender.send(Ok(ConnectorEvent::Payload(payload))).await {
+                                        Ok(_) => {
+                                            MQTT_SOURCE_RECORDS_OUT
+                                                .with_label_values(&[metrics_id.as_str()])
+                                                .inc();
+                                        }
+                                        Err(_) => break,
                                     }
                                 }
                                 Ok(SharedMqttEvent::EndOfStream) => {
@@ -127,10 +142,6 @@ impl SourceConnector for MqttSourceConnector {
             });
         } else {
             tokio::spawn(async move {
-                println!(
-                    "[MqttSourceConnector:{}] connecting standalone to {}",
-                    connector_id, config.broker_url
-                );
                 if let Err(err) =
                     run_standalone_loop(connector_id.clone(), config, sender.clone()).await
                 {
@@ -166,18 +177,17 @@ async fn run_standalone_loop(
     loop {
         match event_loop.poll().await {
             Ok(Event::Incoming(Packet::Publish(publish))) => {
+                MQTT_SOURCE_RECORDS_IN
+                    .with_label_values(&[connector_id.as_str()])
+                    .inc();
                 let payload = publish.payload.to_vec();
-                println!(
-                    "[MqttSourceConnector:{}] received {} bytes",
-                    connector_id,
-                    payload.len()
-                );
-                if sender
-                    .send(Ok(ConnectorEvent::Payload(payload)))
-                    .await
-                    .is_err()
-                {
-                    break;
+                match sender.send(Ok(ConnectorEvent::Payload(payload))).await {
+                    Ok(_) => {
+                        MQTT_SOURCE_RECORDS_OUT
+                            .with_label_values(&[connector_id.as_str()])
+                            .inc();
+                    }
+                    Err(_) => break,
                 }
             }
             Ok(Event::Incoming(Packet::Disconnect)) => break,
@@ -217,6 +227,7 @@ fn build_mqtt_options(config: &MqttSourceConfig) -> Result<MqttOptions, Connecto
         })?;
 
     let mut options = MqttOptions::new(config.client_id(), host, port);
+    options.set_max_packet_size(64 * 1024 * 1024, 64 * 1024 * 1024);
     if is_tls_scheme(scheme) {
         options.set_transport(Transport::tls_with_default_config());
     }

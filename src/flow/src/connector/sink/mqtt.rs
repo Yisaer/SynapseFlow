@@ -2,6 +2,8 @@
 
 use super::{SinkConnector, SinkConnectorError};
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
+use prometheus::{register_int_counter_vec, IntCounterVec};
 use rumqttc::{AsyncClient, ConnectionError, Event, EventLoop, MqttOptions, QoS, Transport};
 use tokio::task::JoinHandle;
 use url::Url;
@@ -65,6 +67,24 @@ pub struct MqttSinkConnector {
     config: MqttSinkConfig,
     client: Option<SinkClient>,
 }
+
+static MQTT_SINK_RECORDS_IN: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "mqtt_sink_records_in_total",
+        "Number of records received by MQTT sink connectors",
+        &["connector"]
+    )
+    .expect("create mqtt sink records_in counter vec")
+});
+
+static MQTT_SINK_RECORDS_OUT: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "mqtt_sink_records_out_total",
+        "Number of records successfully published by MQTT sink connectors",
+        &["connector"]
+    )
+    .expect("create mqtt sink records_out counter vec")
+});
 
 enum SinkClient {
     Shared(SharedMqttClient),
@@ -169,17 +189,9 @@ impl MqttSinkConnector {
             let client = acquire_shared_client(&connector_key)
                 .await
                 .map_err(|err| SinkConnectorError::Other(err.to_string()))?;
-            println!(
-                "[MqttSinkConnector:{}] connected via shared client (key={})",
-                self.id, connector_key
-            );
             self.client = Some(SinkClient::Shared(client));
         } else {
             let standalone = StandaloneMqttClient::new(&self.config).await?;
-            println!(
-                "[MqttSinkConnector:{}] connected standalone to {}",
-                self.id, self.config.broker_url
-            );
             self.client = Some(SinkClient::Standalone(standalone));
         }
         Ok(())
@@ -207,11 +219,9 @@ impl SinkConnector for MqttSinkConnector {
         self.ensure_client().await?;
         let qos = self.publish_qos()?;
         if let Some(client) = &self.client {
-            println!(
-                "[MqttSinkConnector:{}] sending {} bytes",
-                self.id,
-                payload.len()
-            );
+            MQTT_SINK_RECORDS_IN
+                .with_label_values(&[self.id.as_str()])
+                .inc();
             client
                 .publish(
                     &self.config.topic,
@@ -220,6 +230,11 @@ impl SinkConnector for MqttSinkConnector {
                     payload.to_vec(),
                 )
                 .await
+                .map(|_| {
+                    MQTT_SINK_RECORDS_OUT
+                        .with_label_values(&[self.id.as_str()])
+                        .inc()
+                })
         } else {
             Err(SinkConnectorError::Unavailable(format!(
                 "mqtt sink `{}` not connected",
@@ -265,6 +280,7 @@ fn build_mqtt_options(config: &MqttSinkConfig) -> Result<MqttOptions, SinkConnec
         })?;
 
     let mut options = MqttOptions::new(config.client_id(), host, port);
+    options.set_max_packet_size(64 * 1024 * 1024, 64 * 1024 * 1024);
     if is_tls_scheme(scheme) {
         options.set_transport(Transport::tls_with_default_config());
     }
