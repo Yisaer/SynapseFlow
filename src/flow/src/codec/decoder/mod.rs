@@ -3,7 +3,7 @@
 use crate::model::{CollectionError, Column, RecordBatch};
 use datatypes::{ConcreteDatatype, ListValue, StructField, StructType, StructValue, Value};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 /// Errors that can occur while decoding payloads.
 #[derive(thiserror::Error, Debug)]
@@ -106,30 +106,36 @@ impl JsonDecoder {
             return Ok(RecordBatch::empty());
         }
 
-        let mut keys = BTreeSet::new();
-        for row in &rows {
-            for key in row.keys() {
-                keys.insert(key.clone());
+        let mut column_order = Vec::new();
+        let mut column_values: HashMap<String, Vec<Value>> = HashMap::new();
+
+        for (row_idx, row) in rows.iter().enumerate() {
+            // Extend existing columns with a placeholder for this row; values will
+            // be overwritten below if the field is present in the row.
+            for values in column_values.values_mut() {
+                values.push(Value::Null);
+            }
+
+            for (key, value) in row {
+                let entry = column_values.entry(key.clone()).or_insert_with(|| {
+                    column_order.push(key.clone());
+                    vec![Value::Null; row_idx + 1]
+                });
+                entry[row_idx] = json_to_value(value);
             }
         }
 
-        if keys.is_empty() {
+        if column_order.is_empty() {
             return Err(CodecError::Other(
                 "JSON object rows must contain at least one field".to_string(),
             ));
         }
 
-        let mut columns = Vec::with_capacity(keys.len());
-        for key in keys {
-            let mut col_values = Vec::with_capacity(rows.len());
-            for row in &rows {
-                if let Some(value) = row.get(&key) {
-                    col_values.push(json_to_value(value));
-                } else {
-                    col_values.push(Value::Null);
-                }
+        let mut columns = Vec::with_capacity(column_order.len());
+        for key in column_order {
+            if let Some(values) = column_values.remove(&key) {
+                columns.push(Column::new(self.source_name.clone(), key, values));
             }
-            columns.push(Column::new(self.source_name.clone(), key, col_values));
         }
 
         Ok(RecordBatch::new(columns)?)

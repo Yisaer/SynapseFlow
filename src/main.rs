@@ -18,7 +18,7 @@ use tokio::time::{sleep, Duration};
 const DEFAULT_BROKER_URL: &str = "tcp://127.0.0.1:1883";
 const SOURCE_TOPIC: &str = "/yisa/data";
 const SINK_TOPIC: &str = "/yisa/data2";
-const MQTT_QOS: u8 = 1;
+const MQTT_QOS: u8 = 0;
 const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9898";
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 5;
 
