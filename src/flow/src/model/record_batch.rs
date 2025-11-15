@@ -30,6 +30,11 @@ impl RecordBatch {
         &self.rows
     }
 
+    /// Mutable access to stored rows (internal use for in-place updates).
+    pub fn rows_mut(&mut self) -> &mut [Tuple] {
+        &mut self.rows
+    }
+
     /// Number of rows.
     pub fn num_rows(&self) -> usize {
         self.rows.len()
