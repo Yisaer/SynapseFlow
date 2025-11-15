@@ -5,13 +5,11 @@
 
 use crate::codec::RecordDecoder;
 use crate::connector::{ConnectorEvent, SourceConnector};
-use crate::model::{Collection, RecordBatch};
 use crate::processor::base::{fan_in_streams, DEFAULT_CHANNEL_CAPACITY};
 use crate::processor::{Processor, ProcessorError, StreamData, StreamError};
 use futures::stream::StreamExt;
 use once_cell::sync::Lazy;
 use prometheus::{register_int_counter_vec, IntCounterVec};
-use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;

@@ -188,7 +188,7 @@ pub fn build_columns_from_rows(rows: &[Tuple], column_pairs: &[(String, String)]
 
     effective_pairs
         .into_iter()
-        .zip(column_values.into_iter())
+        .zip(column_values)
         .map(|((source, name), values)| Column::new(source, name, values))
         .collect()
 }
