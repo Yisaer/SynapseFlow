@@ -4,39 +4,27 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod metrics;
 
+use crate::metrics::{CPU_SECONDS_TOTAL_COUNTER, CPU_USAGE_GAUGE, MEMORY_USAGE_GAUGE};
+use pprof::protos::Message;
+use pprof::ProfilerGuard;
 use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration as StdDuration;
-
-use crate::metrics::{CPU_SECONDS_TOTAL_COUNTER, CPU_USAGE_GAUGE, MEMORY_USAGE_GAUGE};
-use flow::codec::JsonDecoder;
-use flow::connector::{MqttSinkConfig, MqttSinkConnector, MqttSourceConfig, MqttSourceConnector};
-use flow::processor::processor_builder::PlanProcessor;
-use flow::processor::{ProcessorPipeline, SinkProcessor};
-use flow::JsonEncoder;
-use flow::Processor;
-use pprof::protos::Message;
-use pprof::ProfilerGuard;
 use sysinfo::{Pid, System};
 use tikv_jemalloc_ctl::raw;
 use tokio::time::{sleep, Duration};
 
-const DEFAULT_BROKER_URL: &str = "tcp://127.0.0.1:1883";
-const SOURCE_TOPIC: &str = "/yisa/data";
-const SINK_TOPIC: &str = "/yisa/data2";
-const MQTT_QOS: u8 = 0;
 const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9898";
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 5;
 const DEFAULT_PROFILE_ADDR: &str = "0.0.0.0:6060";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profiling_enabled = profile_server_enabled();
     if profiling_enabled {
         ensure_jemalloc_profiling();
@@ -47,45 +35,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         start_profile_server();
     }
 
-    let sql = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("Usage: synapse-flow \"<SQL query>\"");
-        process::exit(1);
-    });
+    let manager_addr = env::var("MANAGER_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    println!("Starting manager on {}", manager_addr);
+    let manager_future = manager::start_server(manager_addr.clone());
 
-    let mut sink = SinkProcessor::new("mqtt_sink");
-    sink.disable_result_forwarding();
-    let sink_config = MqttSinkConfig::new("mqtt_sink", DEFAULT_BROKER_URL, SINK_TOPIC, MQTT_QOS);
-    let sink_connector = MqttSinkConnector::new("mqtt_sink_connector", sink_config);
-    sink.add_connector(
-        Box::new(sink_connector),
-        Arc::new(JsonEncoder::new("mqtt_sink_encoder")),
-    );
-
-    let mut pipeline = flow::create_pipeline(&sql, vec![sink])?;
-    attach_mqtt_sources(&mut pipeline, DEFAULT_BROKER_URL, SOURCE_TOPIC, MQTT_QOS)?;
-
-    if let Some(mut output_rx) = pipeline.take_output() {
-        tokio::spawn(async move {
-            while let Some(message) = output_rx.recv().await {
-                println!("[PipelineOutput] {}", message.description());
+    tokio::select! {
+        result = manager_future => {
+            if let Err(err) = result {
+                eprintln!("Manager server exited with error: {}", err);
+                return Err(err);
             }
-            println!("[PipelineOutput] channel closed");
-        });
-    } else {
-        println!("[PipelineOutput] output channel unavailable; nothing will be drained");
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("Ctrl+C received, shutting down...");
+        }
     }
 
-    pipeline.start();
-    println!("Pipeline running between MQTT topics {SOURCE_TOPIC} -> {SINK_TOPIC} WITH SQL {sql}.");
-    println!("Press Ctrl+C to terminate.");
-
-    tokio::signal::ctrl_c().await?;
-    println!("Stopping pipeline...");
-    pipeline.quick_close().await?;
     Ok(())
 }
 
-async fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error>> {
+async fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = env::var("METRICS_ADDR")
         .unwrap_or_else(|_| DEFAULT_METRICS_ADDR.to_string())
         .parse()?;
@@ -309,35 +278,4 @@ fn profile_server_enabled() -> bool {
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
-}
-
-fn attach_mqtt_sources(
-    pipeline: &mut ProcessorPipeline,
-    broker_url: &str,
-    topic: &str,
-    qos: u8,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut attached = false;
-    for processor in pipeline.middle_processors.iter_mut() {
-        if let PlanProcessor::DataSource(ds) = processor {
-            let source_id = ds.id().to_string();
-            let config = MqttSourceConfig::new(
-                source_id.clone(),
-                broker_url.to_string(),
-                topic.to_string(),
-                qos,
-            );
-            let connector =
-                MqttSourceConnector::new(format!("{source_id}_source_connector"), config);
-            let decoder = Arc::new(JsonDecoder::new(source_id));
-            ds.add_connector(Box::new(connector), decoder);
-            attached = true;
-        }
-    }
-
-    if attached {
-        Ok(())
-    } else {
-        Err("no datasource processors available to attach MQTT source".into())
-    }
 }

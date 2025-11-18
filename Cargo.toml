@@ -2,7 +2,7 @@
 members = [
     "src/flow",
     "src/datatypes",
-    "src/parser",
+    "src/parser", "src/manager",
 ]
 resolver = "2"
 
@@ -24,6 +24,7 @@ sysinfo = "0.30"
 pprof = { version = "0.6.1", features = ["flamegraph", "protobuf"] }
 tikv-jemallocator = { version = "0.6.0", features = ["profiling"] }
 tikv-jemalloc-ctl = "0.6.0"
+manager = { path = "src/manager" }
 
 [[bin]]
 name = "synapse-flow"

@@ -6,7 +6,7 @@ pub mod planner;
 pub mod processor;
 
 pub use codec::{
-    CodecError, CollectionEncoder, EncodeError, JsonDecoder, JsonEncoder, RawStringDecoder,
+    CodecError, CollectionEncoder, EncodeError, JsonDecoder, JsonEncoder,
     RecordDecoder,
 };
 pub use datatypes::Schema;

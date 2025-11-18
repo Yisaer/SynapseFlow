@@ -1,6 +1,6 @@
 //! Decoder abstractions for turning raw bytes into RecordBatch collections.
 
-use crate::model::{CollectionError, Column, RecordBatch, Tuple};
+use crate::model::{CollectionError, RecordBatch, Tuple};
 use datatypes::{ConcreteDatatype, ListValue, StructField, StructType, StructValue, Value};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::sync::Arc;
@@ -29,21 +29,6 @@ pub trait RecordDecoder: Send + Sync + 'static {
 
     /// Convert raw bytes into a single tuple.
     fn decode_tuple(&self, payload: &[u8]) -> Result<Tuple, CodecError>;
-}
-
-/// Minimal decoder that wraps each payload as a one-row, single-column batch.
-pub struct RawStringDecoder {
-    source_name: String,
-    column_name: String,
-}
-
-impl RawStringDecoder {
-    pub fn new(source_name: impl Into<String>, column_name: impl Into<String>) -> Self {
-        Self {
-            source_name: source_name.into(),
-            column_name: column_name.into(),
-        }
-    }
 }
 
 /// Decoder that converts JSON documents (object or array) into a RecordBatch.
