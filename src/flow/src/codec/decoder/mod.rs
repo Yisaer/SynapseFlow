@@ -27,8 +27,8 @@ pub trait RecordDecoder: Send + Sync + 'static {
     /// Convert raw bytes into a RecordBatch.
     fn decode(&self, payload: &[u8]) -> Result<RecordBatch, CodecError>;
 
-    /// Convert raw bytes into row-oriented tuples.
-    fn decode_tuples(&self, payload: &[u8]) -> Result<Vec<Tuple>, CodecError>;
+    /// Convert raw bytes into a single tuple.
+    fn decode_tuple(&self, payload: &[u8]) -> Result<Tuple, CodecError>;
 }
 
 /// Minimal decoder that wraps each payload as a one-row, single-column batch.
@@ -43,28 +43,6 @@ impl RawStringDecoder {
             source_name: source_name.into(),
             column_name: column_name.into(),
         }
-    }
-}
-
-impl RecordDecoder for RawStringDecoder {
-    fn decode(&self, payload: &[u8]) -> Result<RecordBatch, CodecError> {
-        let value = String::from_utf8(payload.to_vec())?;
-        let column = Column::new(
-            self.source_name.clone(),
-            self.column_name.clone(),
-            vec![Value::String(value)],
-        );
-        Ok(RecordBatch::new(vec![column])?)
-    }
-
-    fn decode_tuples(&self, payload: &[u8]) -> Result<Vec<Tuple>, CodecError> {
-        let value = String::from_utf8(payload.to_vec())?;
-        let tuple = Tuple::new(
-            self.source_name.clone(),
-            vec![(self.source_name.clone(), self.column_name.clone())],
-            vec![Value::String(value)],
-        );
-        Ok(vec![tuple])
     }
 }
 
@@ -111,9 +89,18 @@ impl JsonDecoder {
         self.build_from_object_rows(rows)
     }
 
-    pub fn decode_tuples(&self, payload: &[u8]) -> Result<Vec<Tuple>, CodecError> {
+    pub fn decode_tuple(&self, payload: &[u8]) -> Result<Tuple, CodecError> {
         let json = serde_json::from_slice(payload)?;
-        self.decode_value_to_tuples(json)
+        let tuples = self.decode_value_to_tuples(json)?;
+        match tuples.as_slice() {
+            [] => Err(CodecError::Other(
+                "JSON payload did not contain any object rows".to_string(),
+            )),
+            [tuple] => Ok(tuple.clone()),
+            _ => Err(CodecError::Other(
+                "JSON payload contained multiple rows; expected a single object".to_string(),
+            )),
+        }
     }
 
     fn decode_value_to_tuples(&self, json: JsonValue) -> Result<Vec<Tuple>, CodecError> {
@@ -171,7 +158,7 @@ impl JsonDecoder {
                 columns.push((self.source_name.clone(), key));
                 values.push(json_to_value(&value));
             }
-            tuples.push(Tuple::new(self.source_name.clone(), columns, values));
+            tuples.push(Tuple::new(columns, values));
         }
         Ok(tuples)
     }
@@ -184,8 +171,8 @@ impl RecordDecoder for JsonDecoder {
         Ok(batch)
     }
 
-    fn decode_tuples(&self, payload: &[u8]) -> Result<Vec<Tuple>, CodecError> {
-        JsonDecoder::decode_tuples(self, payload)
+    fn decode_tuple(&self, payload: &[u8]) -> Result<Tuple, CodecError> {
+        JsonDecoder::decode_tuple(self, payload)
     }
 }
 
@@ -236,28 +223,31 @@ mod tests {
     use datatypes::Value;
 
     #[test]
-    fn json_decoder_decodes_tuples_with_missing_fields() {
+    fn json_decoder_decodes_single_tuple() {
         let decoder = JsonDecoder::new("orders");
-        let payload = br#"[{"amount":10,"status":"ok"},{"status":"fail"}]"#.as_ref();
-        let tuples = decoder.decode_tuples(payload).expect("decode tuples");
+        let payload = br#"{"amount":10,"status":"ok"}"#.as_ref();
+        let tuple = decoder.decode_tuple(payload).expect("decode tuple");
 
-        assert_eq!(tuples.len(), 2);
-        assert_eq!(tuples[0].source_name, "orders");
         assert_eq!(
-            tuples[0].columns,
+            tuple.columns,
             vec![
                 ("orders".to_string(), "amount".to_string()),
                 ("orders".to_string(), "status".to_string())
             ]
         );
         assert_eq!(
-            tuples[0].values,
+            tuple.values,
             vec![Value::Int64(10), Value::String("ok".to_string())]
         );
-        assert_eq!(
-            tuples[1].columns,
-            vec![("orders".to_string(), "status".to_string())]
-        );
-        assert_eq!(tuples[1].values, vec![Value::String("fail".to_string())]);
+    }
+
+    #[test]
+    fn json_decoder_rejects_multiple_rows_for_tuple() {
+        let decoder = JsonDecoder::new("orders");
+        let payload = br#"[{"amount":10},{"amount":20}]"#.as_ref();
+        let err = decoder
+            .decode_tuple(payload)
+            .expect_err("multiple rows fail");
+        assert!(format!("{err}").contains("multiple rows"));
     }
 }

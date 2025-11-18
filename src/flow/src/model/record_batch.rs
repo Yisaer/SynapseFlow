@@ -77,7 +77,6 @@ impl RecordBatch {
     pub fn with_source_name(&self, source_name: &str) -> Self {
         let mut rows = self.rows.clone();
         for tuple in rows.iter_mut() {
-            tuple.source_name = source_name.to_string();
             for (src, _) in tuple.columns.iter_mut() {
                 *src = source_name.to_string();
             }
@@ -146,7 +145,7 @@ fn columns_to_rows(columns: &[Column]) -> Result<Vec<Tuple>, CollectionError> {
         for column in columns {
             values.push(column.get(row_idx).cloned().unwrap_or(Value::Null));
         }
-        rows.push(Tuple::new(String::new(), column_pairs.clone(), values));
+        rows.push(Tuple::new(column_pairs.clone(), values));
     }
     Ok(rows)
 }

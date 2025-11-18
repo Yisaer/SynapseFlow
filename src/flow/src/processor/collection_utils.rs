@@ -15,7 +15,6 @@ pub fn rewrite_collection_sources(
         any.downcast_mut::<RecordBatch>()
     }) {
         for tuple in batch.rows_mut() {
-            tuple.source_name = source_name.to_string();
             for (src, _) in tuple.columns.iter_mut() {
                 *src = source_name.to_string();
             }
@@ -25,7 +24,6 @@ pub fn rewrite_collection_sources(
 
     let mut rows = collection.rows().to_vec();
     for tuple in rows.iter_mut() {
-        tuple.source_name = source_name.to_string();
         for (src, _) in tuple.columns.iter_mut() {
             *src = source_name.to_string();
         }

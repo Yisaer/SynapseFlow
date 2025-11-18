@@ -104,11 +104,7 @@ impl Collection for RecordBatch {
                 projected_values.push(value);
             }
 
-            projected_rows.push(Tuple::new(
-                tuple.source_name.clone(),
-                projected_columns,
-                projected_values,
-            ));
+            projected_rows.push(Tuple::new(projected_columns, projected_values));
         }
 
         Ok(Box::new(RecordBatch::from_rows(projected_rows)))

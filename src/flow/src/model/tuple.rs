@@ -2,13 +2,12 @@ use datatypes::Value;
 
 /// Tuple represents a single row of data decoded from a source.
 ///
-/// Each tuple keeps the originating source name plus the ordered list of fully
-/// qualified column identifiers and their values. Each entry in `columns`
-/// stores `(source_name, column_name)` for the corresponding value at the same
-/// index in `values`.
+/// The ordered list of fully qualified column identifiers and their values is
+/// stored in `columns` and `values`. Each entry in `columns` stores
+/// `(source_name, column_name)` for the corresponding value at the same index
+/// in `values`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tuple {
-    pub source_name: String,
     pub columns: Vec<(String, String)>,
     pub values: Vec<Value>,
 }
@@ -16,18 +15,14 @@ pub struct Tuple {
 impl Tuple {
     /// Build a new tuple, assuming the caller provides matching column/value
     /// lengths.
-    pub fn new(source_name: String, columns: Vec<(String, String)>, values: Vec<Value>) -> Self {
+    pub fn new(columns: Vec<(String, String)>, values: Vec<Value>) -> Self {
         debug_assert_eq!(
             columns.len(),
             values.len(),
             "Tuple columns and values must have the same length"
         );
 
-        Self {
-            source_name,
-            columns,
-            values,
-        }
+        Self { columns, values }
     }
 
     /// Return number of fields stored in this tuple.

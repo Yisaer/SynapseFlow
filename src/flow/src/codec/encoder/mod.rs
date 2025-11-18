@@ -20,8 +20,8 @@ pub trait CollectionEncoder: Send + Sync + 'static {
     fn id(&self) -> &str;
     /// Convert a collection into a single payload.
     fn encode(&self, collection: &dyn Collection) -> Result<Vec<u8>, EncodeError>;
-    /// Convert a slice of tuples into a single payload.
-    fn encode_tuples(&self, tuples: &[Tuple]) -> Result<Vec<u8>, EncodeError>;
+    /// Convert a tuple into a single payload.
+    fn encode_tuple(&self, tuple: &Tuple) -> Result<Vec<u8>, EncodeError>;
 }
 
 /// Encoder that emits the entire collection as a JSON array of row objects.
@@ -35,14 +35,13 @@ impl JsonEncoder {
         Self { id: id.into() }
     }
 
-    /// Encode one or more tuples as a JSON array payload.
-    pub fn encode_tuples(&self, tuples: &[Tuple]) -> Result<Vec<u8>, EncodeError> {
-        self.encode_tuples_impl(tuples)
+    /// Encode a tuple as a JSON object payload.
+    pub fn encode_tuple(&self, tuple: &Tuple) -> Result<Vec<u8>, EncodeError> {
+        self.encode_tuple_impl(tuple)
     }
 
-    fn encode_tuples_impl(&self, tuples: &[Tuple]) -> Result<Vec<u8>, EncodeError> {
-        let rows: Vec<JsonValue> = tuples.iter().map(tuple_to_json).collect();
-        serde_json::to_vec(&JsonValue::Array(rows)).map_err(EncodeError::Serialization)
+    fn encode_tuple_impl(&self, tuple: &Tuple) -> Result<Vec<u8>, EncodeError> {
+        serde_json::to_vec(&tuple_to_json(tuple)).map_err(EncodeError::Serialization)
     }
 }
 
@@ -70,8 +69,8 @@ impl CollectionEncoder for JsonEncoder {
         Ok(payload)
     }
 
-    fn encode_tuples(&self, tuples: &[Tuple]) -> Result<Vec<u8>, EncodeError> {
-        self.encode_tuples_impl(tuples)
+    fn encode_tuple(&self, tuple: &Tuple) -> Result<Vec<u8>, EncodeError> {
+        self.encode_tuple_impl(tuple)
     }
 }
 
@@ -163,9 +162,8 @@ mod tests {
     }
 
     #[test]
-    fn json_encoder_encodes_tuples() {
+    fn json_encoder_encodes_tuple() {
         let tuple = Tuple::new(
-            "orders".to_string(),
             vec![
                 ("orders".to_string(), "amount".to_string()),
                 ("orders".to_string(), "status".to_string()),
@@ -173,9 +171,9 @@ mod tests {
             vec![Value::Int64(5), Value::String("ok".to_string())],
         );
         let encoder = JsonEncoder::new("json");
-        let payload = encoder.encode_tuples(&[tuple]).expect("encode tuples");
+        let payload = encoder.encode_tuple(&tuple).expect("encode tuple");
 
         let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(json, serde_json::json!([{"amount":5, "status":"ok"}]));
+        assert_eq!(json, serde_json::json!({"amount":5, "status":"ok"}));
     }
 }
