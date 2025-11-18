@@ -137,11 +137,13 @@ impl JsonDecoder {
     ) -> Result<Vec<Tuple>, CodecError> {
         let mut tuples = Vec::with_capacity(rows.len());
         for row in rows {
-            let entries = row
-                .into_iter()
-                .map(|(key, value)| (Arc::new(key), json_to_value(&value)))
-                .collect();
-            let message = Arc::new(Message::new(self.source_name.clone(), entries));
+            let mut keys = Vec::with_capacity(row.len());
+            let mut values = Vec::with_capacity(row.len());
+            for (key, value) in row {
+                keys.push(key);
+                values.push(json_to_value(&value));
+            }
+            let message = Arc::new(Message::new(Arc::<str>::from(self.source_name.as_str()), keys, values));
             tuples.push(Tuple::new(vec![message]));
         }
         Ok(tuples)

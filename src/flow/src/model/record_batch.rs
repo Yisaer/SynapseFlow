@@ -40,7 +40,7 @@ impl Clone for RecordBatch {
 }
 
 type ColumnValues = Vec<Value>;
-type ColumnEntry = (Arc<String>, ColumnValues);
+type ColumnEntry = (String, ColumnValues);
 
 /// Build rows from simple column tuples `(source, column, values)`.
 pub fn rows_from_columns_simple(
@@ -62,23 +62,30 @@ pub fn rows_from_columns_simple(
                 expected_len
             )));
         }
-        grouped.entry(source).or_default().push((Arc::new(name), values));
+        grouped
+            .entry(Arc::<str>::from(source).to_string())
+            .or_default()
+            .push((name, values));
     }
 
     let mut rows = Vec::with_capacity(expected_len);
     for row_idx in 0..expected_len {
-        let mut messages = Vec::with_capacity(grouped.len());
-        for (source, cols) in grouped.iter() {
-            let mut entries = Vec::with_capacity(cols.len());
-            for (col_name, values) in cols {
-                let value = values
-                    .get(row_idx)
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                entries.push((col_name.clone(), value));
-            }
-            messages.push(Arc::new(Message::new(source.clone(), entries)));
-        }
+        let messages = grouped
+            .iter()
+            .map(|(source, cols)| {
+                let mut keys = Vec::with_capacity(cols.len());
+                let mut values_vec = Vec::with_capacity(cols.len());
+                for (col_name, values) in cols {
+                    let value = values
+                        .get(row_idx)
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    keys.push(col_name.clone());
+                    values_vec.push(value);
+                }
+                Arc::new(Message::new(Arc::<str>::from(source.as_str()), keys, values_vec))
+            })
+            .collect();
         rows.push(Tuple::new(messages));
     }
     Ok(rows)

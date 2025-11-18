@@ -161,11 +161,9 @@ mod tests {
 
     #[test]
     fn json_encoder_encodes_tuple() {
-        let entries = vec![
-            (Arc::new("amount".to_string()), Value::Int64(5)),
-            (Arc::new("status".to_string()), Value::String("ok".to_string())),
-        ];
-        let message = Arc::new(Message::new("orders".to_string(), entries));
+        let keys = vec!["amount".to_string(), "status".to_string()];
+        let values = vec![Value::Int64(5), Value::String("ok".to_string())];
+        let message = Arc::new(Message::new(Arc::<str>::from("orders"), keys, values));
         let tuple = Tuple::new(vec![message]);
         let encoder = JsonEncoder::new("json");
         let payload = encoder.encode_tuple(&tuple).expect("encode tuple");

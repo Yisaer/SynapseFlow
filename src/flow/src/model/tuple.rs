@@ -5,22 +5,21 @@ use std::sync::Arc;
 /// Immutable data from a single source.
 #[derive(Debug)]
 pub struct Message {
-    source: String,
-    index: HashMap<Arc<String>, usize>,
+    source: Arc<str>,
+    keys: Vec<String>,
     values: Vec<Value>,
 }
 
 impl Message {
-    pub fn new(source: impl Into<String>, columns: Vec<(Arc<String>, Value)>) -> Self {
-        let mut index = HashMap::with_capacity(columns.len());
-        let mut values = Vec::with_capacity(columns.len());
-        for (name, value) in columns {
-            index.insert(name.clone(), values.len());
-            values.push(value);
-        }
+    pub fn new(source: impl Into<Arc<str>>, keys: Vec<String>, values: Vec<Value>) -> Self {
+        debug_assert_eq!(
+            keys.len(),
+            values.len(),
+            "Message keys and values length must match"
+        );
         Self {
             source: source.into(),
-            index,
+            keys,
             values,
         }
     }
@@ -29,16 +28,15 @@ impl Message {
         &self.source
     }
 
-    pub fn entries(&self) -> impl Iterator<Item = (&Arc<String>, &Value)> {
-        self.index
-            .iter()
-            .map(move |(name, idx)| (name, &self.values[*idx]))
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.keys.iter().zip(self.values.iter()).map(|(k, v)| (k.as_str(), v))
     }
 
     pub fn value(&self, column: &str) -> Option<&Value> {
-        self.index
-            .get(&Arc::new(column.to_string()))
-            .and_then(|idx| self.values.get(*idx))
+        self.keys
+            .iter()
+            .position(|k| k == column)
+            .and_then(|idx| self.values.get(idx))
     }
 }
 
@@ -115,7 +113,7 @@ impl Tuple {
         }
         for msg in &self.messages {
             for (name, value) in msg.entries() {
-                out.push(((msg.source(), name.as_str()), value));
+                out.push(((msg.source(), name), value));
             }
         }
         out
@@ -136,7 +134,7 @@ impl Tuple {
 
     pub fn len(&self) -> usize {
         let aff_len = self.affiliate.as_ref().map(|aff| aff.index.len()).unwrap_or(0);
-        let msg_len: usize = self.messages.iter().map(|msg| msg.index.len()).sum();
+        let msg_len: usize = self.messages.iter().map(|msg| msg.keys.len()).sum();
         aff_len + msg_len
     }
 
