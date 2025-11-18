@@ -353,6 +353,7 @@ dependencies = [
  "async-trait",
  "datatypes",
  "futures",
+ "indexmap 2.12.0",
  "once_cell",
  "parser",
  "prometheus",

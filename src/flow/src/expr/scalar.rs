@@ -86,10 +86,8 @@ impl ScalarExpr {
             }
             ScalarExpr::Wildcard { source_name } => {
                 let selected: Vec<_> = tuple
-                    .columns
-                    .iter()
-                    .zip(tuple.values.iter())
-                    .filter(|((src, _), _)| match source_name {
+                    .entries()
+                    .filter(|((src, _), _)| match source_name.as_ref() {
                         Some(prefix) => src == prefix,
                         None => true,
                     })

@@ -15,18 +15,14 @@ pub fn rewrite_collection_sources(
         any.downcast_mut::<RecordBatch>()
     }) {
         for tuple in batch.rows_mut() {
-            for (src, _) in tuple.columns.iter_mut() {
-                *src = source_name.to_string();
-            }
+            tuple.rewrite_sources(source_name);
         }
         return collection;
     }
 
     let mut rows = collection.rows().to_vec();
     for tuple in rows.iter_mut() {
-        for (src, _) in tuple.columns.iter_mut() {
-            *src = source_name.to_string();
-        }
+        tuple.rewrite_sources(source_name);
     }
     Arc::new(RecordBatch::from_rows(rows))
 }

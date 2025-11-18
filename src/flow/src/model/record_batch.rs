@@ -77,9 +77,7 @@ impl RecordBatch {
     pub fn with_source_name(&self, source_name: &str) -> Self {
         let mut rows = self.rows.clone();
         for tuple in rows.iter_mut() {
-            for (src, _) in tuple.columns.iter_mut() {
-                *src = source_name.to_string();
-            }
+            tuple.rewrite_sources(source_name);
         }
         Self { rows }
     }
@@ -139,13 +137,15 @@ fn columns_to_rows(columns: &[Column]) -> Result<Vec<Tuple>, CollectionError> {
         .map(|column| (column.source_name.clone(), column.name.clone()))
         .collect();
 
+    let index = Tuple::build_index(&column_pairs);
+
     let mut rows = Vec::with_capacity(num_rows);
     for row_idx in 0..num_rows {
         let mut values = Vec::with_capacity(columns.len());
         for column in columns {
             values.push(column.get(row_idx).cloned().unwrap_or(Value::Null));
         }
-        rows.push(Tuple::new(column_pairs.clone(), values));
+        rows.push(Tuple::new(index.clone(), values));
     }
     Ok(rows)
 }
@@ -154,9 +154,9 @@ pub fn collect_column_pairs(rows: &[Tuple]) -> Vec<(String, String)> {
     let mut order = Vec::new();
     let mut seen = HashSet::new();
     for row in rows {
-        for pair in &row.columns {
+        for pair in row.column_pairs() {
             if seen.insert(pair.clone()) {
-                order.push(pair.clone());
+                order.push(pair);
             }
         }
     }

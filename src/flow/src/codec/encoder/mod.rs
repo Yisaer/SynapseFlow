@@ -58,7 +58,7 @@ impl CollectionEncoder for JsonEncoder {
             let mut json_rows = Vec::with_capacity(rows.len());
             for tuple in rows {
                 let mut json_row = JsonMap::new();
-                for ((_, column_name), value) in tuple.columns.iter().zip(tuple.values.iter()) {
+                for ((_, column_name), value) in tuple.entries() {
                     json_row.insert(column_name.clone(), value_to_json(value));
                 }
                 json_rows.push(JsonValue::Object(json_row));
@@ -107,13 +107,8 @@ fn value_to_json(value: &Value) -> JsonValue {
 }
 
 fn tuple_to_json(tuple: &Tuple) -> JsonValue {
-    debug_assert_eq!(
-        tuple.columns.len(),
-        tuple.values.len(),
-        "Tuple columns and values length mismatch"
-    );
-    let mut json_row = JsonMap::with_capacity(tuple.columns.len());
-    for ((_, column_name), value) in tuple.columns.iter().zip(tuple.values.iter()) {
+    let mut json_row = JsonMap::with_capacity(tuple.len());
+    for ((_, column_name), value) in tuple.entries() {
         json_row.insert(column_name.clone(), value_to_json(value));
     }
     JsonValue::Object(json_row)
@@ -163,11 +158,13 @@ mod tests {
 
     #[test]
     fn json_encoder_encodes_tuple() {
+        let columns = vec![
+            ("orders".to_string(), "amount".to_string()),
+            ("orders".to_string(), "status".to_string()),
+        ];
+        let index = Tuple::build_index(&columns);
         let tuple = Tuple::new(
-            vec![
-                ("orders".to_string(), "amount".to_string()),
-                ("orders".to_string(), "status".to_string()),
-            ],
+            index,
             vec![Value::Int64(5), Value::String("ok".to_string())],
         );
         let encoder = JsonEncoder::new("json");

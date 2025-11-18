@@ -26,7 +26,6 @@ struct TestCase {
 
 /// Column-specific checks
 struct ColumnCheck {
-    column_index: usize,
     expected_name: String,
     expected_values: Vec<Value>,
 }
@@ -104,18 +103,19 @@ async fn run_test_case(test_case: TestCase) {
 
                 for check in test_case.column_checks {
                     let column = all_columns
-                        .get(check.column_index)
-                        .expect("column snapshot");
-                    assert_eq!(
-                        column.name, check.expected_name,
-                        "Wrong column name at index {} for test: {}",
-                        check.column_index, test_case.name
-                    );
+                        .iter()
+                        .find(|col| col.name() == check.expected_name)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "Column {} missing for test: {}",
+                                check.expected_name, test_case.name
+                            )
+                        });
                     assert_eq!(
                         column.values(),
                         &check.expected_values,
                         "Wrong values in column {} for test: {}",
-                        check.column_index,
+                        check.expected_name,
                         test_case.name
                     );
                 }
@@ -166,12 +166,10 @@ async fn test_create_pipeline_various_queries() {
             expected_columns: 3,
             column_checks: vec![
                 ColumnCheck {
-                    column_index: 0,
                     expected_name: "a".to_string(),
                     expected_values: vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
                 },
                 ColumnCheck {
-                    column_index: 1,
                     expected_name: "b".to_string(),
                     expected_values: vec![Value::Int64(100), Value::Int64(200), Value::Int64(300)],
                 },
@@ -198,12 +196,10 @@ async fn test_create_pipeline_various_queries() {
             expected_columns: 2,
             column_checks: vec![
                 ColumnCheck {
-                    column_index: 0,
                     expected_name: "a + 1".to_string(),
                     expected_values: vec![Value::Int64(11), Value::Int64(21), Value::Int64(31)],
                 },
                 ColumnCheck {
-                    column_index: 1,
                     expected_name: "b + 2".to_string(),
                     expected_values: vec![Value::Int64(102), Value::Int64(202), Value::Int64(302)],
                 },
@@ -226,12 +222,10 @@ async fn test_create_pipeline_various_queries() {
             expected_columns: 2,
             column_checks: vec![
                 ColumnCheck {
-                    column_index: 0,
                     expected_name: "a".to_string(),
                     expected_values: vec![Value::Int64(20), Value::Int64(30)], // Filtered values
                 },
                 ColumnCheck {
-                    column_index: 1,
                     expected_name: "b".to_string(),
                     expected_values: vec![Value::Int64(200), Value::Int64(300)], // Corresponding b values
                 },
@@ -254,12 +248,10 @@ async fn test_create_pipeline_various_queries() {
             expected_columns: 2,
             column_checks: vec![
                 ColumnCheck {
-                    column_index: 0,
                     expected_name: "a + 5".to_string(),
                     expected_values: vec![Value::Int64(25), Value::Int64(35)], // (20+5), (30+5)
                 },
                 ColumnCheck {
-                    column_index: 1,
                     expected_name: "b * 2".to_string(),
                     expected_values: vec![Value::Int64(400), Value::Int64(600)], // (200*2), (300*2)
                 },
@@ -282,12 +274,10 @@ async fn test_create_pipeline_various_queries() {
             expected_columns: 2,
             column_checks: vec![
                 ColumnCheck {
-                    column_index: 0,
                     expected_name: "a".to_string(),
                     expected_values: vec![], // Empty
                 },
                 ColumnCheck {
-                    column_index: 1,
                     expected_name: "b".to_string(),
                     expected_values: vec![], // Empty
                 },
@@ -303,7 +293,6 @@ async fn test_create_pipeline_various_queries() {
             expected_rows: 3, // All rows match the filter
             expected_columns: 1,
             column_checks: vec![ColumnCheck {
-                column_index: 0,
                 expected_name: "a".to_string(),
                 expected_values: vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)],
             }],

@@ -3,6 +3,7 @@
 use crate::model::{CollectionError, RecordBatch, Tuple};
 use datatypes::{ConcreteDatatype, ListValue, StructField, StructType, StructValue, Value};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Errors that can occur while decoding payloads.
@@ -137,13 +138,13 @@ impl JsonDecoder {
     ) -> Result<Vec<Tuple>, CodecError> {
         let mut tuples = Vec::with_capacity(rows.len());
         for row in rows {
-            let mut columns = Vec::with_capacity(row.len());
+            let mut index = HashMap::with_capacity(row.len());
             let mut values = Vec::with_capacity(row.len());
-            for (key, value) in row {
-                columns.push((self.source_name.clone(), key));
+            for (idx, (key, value)) in row.into_iter().enumerate() {
+                index.insert((self.source_name.clone(), key), idx);
                 values.push(json_to_value(&value));
             }
-            tuples.push(Tuple::new(columns, values));
+            tuples.push(Tuple::new(index, values));
         }
         Ok(tuples)
     }
@@ -213,13 +214,14 @@ mod tests {
         let payload = br#"{"amount":10,"status":"ok"}"#.as_ref();
         let tuple = decoder.decode_tuple(payload).expect("decode tuple");
 
-        assert_eq!(
-            tuple.columns,
-            vec![
-                ("orders".to_string(), "amount".to_string()),
-                ("orders".to_string(), "status".to_string())
-            ]
-        );
+        let mut columns = tuple.column_pairs();
+        columns.sort();
+        let mut expected = vec![
+            ("orders".to_string(), "amount".to_string()),
+            ("orders".to_string(), "status".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(columns, expected);
         assert_eq!(
             tuple.values,
             vec![Value::Int64(10), Value::String("ok".to_string())]

@@ -63,10 +63,8 @@ impl Collection for RecordBatch {
             for field in fields {
                 if let ScalarExpr::Wildcard { source_name } = &field.compiled_expr {
                     let selected: Vec<_> = tuple
-                        .columns
-                        .iter()
-                        .zip(tuple.values.iter())
-                        .filter(|((src, _), _)| match source_name {
+                        .entries()
+                        .filter(|((src, _), _)| match source_name.as_ref() {
                             Some(prefix) => src == prefix,
                             None => true,
                         })
@@ -104,7 +102,8 @@ impl Collection for RecordBatch {
                 projected_values.push(value);
             }
 
-            projected_rows.push(Tuple::new(projected_columns, projected_values));
+            let index = Tuple::build_index(&projected_columns);
+            projected_rows.push(Tuple::new(index, projected_values));
         }
 
         Ok(Box::new(RecordBatch::from_rows(projected_rows)))
