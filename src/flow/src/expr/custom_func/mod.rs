@@ -13,31 +13,27 @@ pub const CUSTOM_FUNCTIONS: &[&str] = &[
 /// Custom function that can be implemented by users
 /// This trait allows users to define their own functions for evaluation
 pub trait CustomFunc: Send + Sync + std::fmt::Debug {
-    /// Validate function arguments for vectorized evaluation (multiple rows)
+    /// Validate function arguments for a single row evaluation.
     ///
     /// # Arguments
     ///
-    /// * `args` - A vector of argument vectors, where each inner vector contains values for all rows
-    ///   args[i][j] represents the i-th argument's j-th row value
+    /// * `args` - Values for this row in call-order.
     ///
     /// # Returns
     ///
-    /// Returns Ok(()) if arguments are valid for vectorized processing, or an error if validation fails.
-    /// Implementors should validate the entire multi-row structure and data consistency.
-    fn validate_vectorized(&self, args: &[Vec<Value>]) -> Result<(), EvalError>;
+    /// Returns Ok(()) if arguments are valid for per-row processing, or an error otherwise.
+    fn validate_row(&self, args: &[Value]) -> Result<(), EvalError>;
 
-    /// Evaluate the function with vectorized arguments (multiple rows in one call)
+    /// Evaluate the function with row arguments (one row per call).
     ///
     /// # Arguments
     ///
-    /// * `args` - A vector of argument vectors, where each inner vector contains values for all rows
-    ///   args[i][j] represents the i-th argument's j-th row value
+    /// * `args` - Values for this row in call-order. Assumes they were validated by `validate_row`.
     ///
     /// # Returns
     ///
-    /// Returns a vector of evaluated results, one for each row.
-    /// Implementors should implement true vectorized evaluation that processes multiple rows efficiently.
-    fn eval_vectorized(&self, args: &[Vec<Value>]) -> Result<Vec<Value>, EvalError>;
+    /// Returns the evaluated result for the current row.
+    fn eval_row(&self, args: &[Value]) -> Result<Value, EvalError>;
 
     /// Get the function name for debugging purposes
     fn name(&self) -> &str;

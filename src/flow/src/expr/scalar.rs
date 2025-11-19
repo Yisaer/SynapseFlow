@@ -181,15 +181,12 @@ impl ScalarExpr {
                 }
             }
             ScalarExpr::CallFunc { func, args } => {
-                let mut arg_vectors = Vec::with_capacity(args.len());
+                let mut row_args = Vec::with_capacity(args.len());
                 for arg_expr in args {
-                    arg_vectors.push(vec![arg_expr.eval_with_tuple(tuple)?]);
+                    row_args.push(arg_expr.eval_with_tuple(tuple)?);
                 }
-                func.validate_vectorized(&arg_vectors)?;
-                let results = func.eval_vectorized(&arg_vectors)?;
-                results.into_iter().next().ok_or(EvalError::NotImplemented {
-                    feature: "Custom function returned no result".to_string(),
-                })
+                func.validate_row(&row_args)?;
+                func.eval_row(&row_args)
             }
         }
     }
