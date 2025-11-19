@@ -64,6 +64,7 @@ impl Processor for ResultCollectProcessor {
             )
         });
         let processor_id = self.id.clone();
+        println!("[ResultCollectProcessor:{processor_id}] starting");
 
         tokio::spawn(async move {
             let output = match output {
@@ -73,6 +74,7 @@ impl Processor for ResultCollectProcessor {
 
             loop {
                 tokio::select! {
+                    biased;
                     control_item = control_streams.next(), if control_active => {
                         if let Some(result) = control_item {
                             let control_data = match result {
@@ -95,6 +97,7 @@ impl Processor for ResultCollectProcessor {
                                     .send(StreamData::stream_end())
                                     .await
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
+                                println!("[ResultCollectProcessor:{}] stopped", processor_id);
                                 return Ok(());
                             }
                             continue;
@@ -116,20 +119,27 @@ impl Processor for ResultCollectProcessor {
                                         .send(StreamData::stream_end())
                                         .await
                                         .map_err(|_| ProcessorError::ChannelClosed)?;
+                                    println!("[ResultCollectProcessor:{}] stopped", processor_id);
                                     return Ok(());
                                 }
                             }
                             Some(Err(BroadcastStreamRecvError::Lagged(skipped))) => {
-                                return Err(ProcessorError::ProcessingError(format!(
+                                let err = ProcessorError::ProcessingError(format!(
                                     "ResultCollectProcessor input lagged by {} messages",
                                     skipped
-                                )))
+                                ));
+                                println!(
+                                    "[ResultCollectProcessor:{}] stopped with error: {}",
+                                    processor_id, err
+                                );
+                                return Err(err);
                             }
                             None => {
                                 output
                                     .send(StreamData::stream_end())
                                     .await
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
+                                println!("[ResultCollectProcessor:{}] stopped", processor_id);
                                 return Ok(());
                             }
                         }

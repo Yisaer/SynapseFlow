@@ -4,14 +4,16 @@
 //! as StreamData::Collection.
 
 use crate::codec::RecordDecoder;
-use crate::connector::{ConnectorEvent, SourceConnector};
+use crate::connector::{ConnectorError, ConnectorEvent, SourceConnector};
 use crate::processor::base::{fan_in_streams, DEFAULT_CHANNEL_CAPACITY};
 use crate::processor::{Processor, ProcessorError, StreamData, StreamError};
+use datatypes::Schema;
 use futures::stream::StreamExt;
 use once_cell::sync::Lazy;
 use prometheus::{register_int_counter_vec, IntCounterVec};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 /// DataSourceProcessor - reads data from PhysicalDatasource
@@ -23,6 +25,7 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 pub struct DataSourceProcessor {
     /// Processor identifier
     source_name: String,
+    schema: Arc<Schema>,
     /// Input channels for receiving control signals
     inputs: Vec<broadcast::Receiver<StreamData>>,
     control_inputs: Vec<broadcast::Receiver<StreamData>>,
@@ -54,66 +57,31 @@ static DATASOURCE_RECORDS_OUT: Lazy<IntCounterVec> = Lazy::new(|| {
 struct ConnectorBinding {
     connector: Box<dyn SourceConnector>,
     decoder: Arc<dyn RecordDecoder>,
+    handle: Option<JoinHandle<()>>,
 }
 
-impl DataSourceProcessor {
-    /// Create a new DataSourceProcessor from PhysicalDatasource
-    pub fn new(source_name: impl Into<String>) -> Self {
-        let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
-        let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
-        Self {
-            source_name: source_name.into(),
-            inputs: Vec::new(),
-            control_inputs: Vec::new(),
-            output,
-            control_output,
-            connectors: Vec::new(),
-        }
-    }
+impl ConnectorBinding {
+    fn activate(&mut self, processor_id: &str) -> broadcast::Receiver<StreamData> {
+        let (sender, receiver) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
+        let decoder = Arc::clone(&self.decoder);
+        let processor_id = processor_id.to_string();
+        let connector_id = self.connector.id().to_string();
+        let mut stream = match self.connector.subscribe() {
+            Ok(stream) => stream,
+            Err(err) => {
+                let _ = sender.send(StreamData::error(
+                    StreamError::new(format!("connector subscribe error: {}", err))
+                        .with_source(processor_id.clone()),
+                ));
+                return receiver;
+            }
+        };
 
-    /// Register an external source connector and its decoder.
-    pub fn add_connector(
-        &mut self,
-        connector: Box<dyn SourceConnector>,
-        decoder: Arc<dyn RecordDecoder>,
-    ) {
-        self.connectors
-            .push(ConnectorBinding { connector, decoder });
-    }
-
-    fn activate_connectors(&mut self) -> Vec<broadcast::Receiver<StreamData>> {
-        let mut receivers = Vec::new();
-        for binding in std::mem::take(&mut self.connectors) {
-            let (sender, receiver) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
-            Self::spawn_connector_task(
-                binding.connector,
-                binding.decoder,
-                sender,
-                self.source_name.clone(),
-            );
-            receivers.push(receiver);
-        }
-        receivers
-    }
-
-    fn spawn_connector_task(
-        mut connector: Box<dyn SourceConnector>,
-        decoder: Arc<dyn RecordDecoder>,
-        sender: broadcast::Sender<StreamData>,
-        processor_id: String,
-    ) {
-        tokio::spawn(async move {
-            let mut stream = match connector.subscribe() {
-                Ok(stream) => stream,
-                Err(err) => {
-                    let _ = sender.send(StreamData::error(
-                        StreamError::new(format!("connector subscribe error: {}", err))
-                            .with_source(processor_id.clone()),
-                    ));
-                    return;
-                }
-            };
-
+        println!(
+            "[DataSourceProcessor:{processor_id}] connector {} starting",
+            connector_id
+        );
+        self.handle = Some(tokio::spawn(async move {
             while let Some(event) = stream.next().await {
                 match event {
                     Ok(ConnectorEvent::Payload(bytes)) => match decoder.decode(&bytes) {
@@ -141,7 +109,83 @@ impl DataSourceProcessor {
                     }
                 }
             }
+            println!(
+                "[DataSourceProcessor:{processor_id}] connector {} stopped",
+                connector_id
+            );
+        }));
+
+        receiver
+    }
+
+    async fn shutdown(&mut self) -> Result<(), ProcessorError> {
+        let connector_id = self.connector.id().to_string();
+        println!("[SourceConnector:{connector_id}] closing");
+        if let Err(err) = self.connector.close() {
+            return Err(Self::connector_error(self.connector.id(), err));
+        }
+        if let Some(handle) = self.handle.take() {
+            if let Err(join_err) = handle.await {
+                return Err(ProcessorError::ProcessingError(format!(
+                    "Connector join error: {}",
+                    join_err
+                )));
+            }
+        }
+        println!("[SourceConnector:{connector_id}] closed");
+        Ok(())
+    }
+
+    fn connector_error(id: &str, err: ConnectorError) -> ProcessorError {
+        ProcessorError::ProcessingError(format!("connector `{}` error: {}", id, err))
+    }
+}
+impl DataSourceProcessor {
+    /// Create a new DataSourceProcessor from PhysicalDatasource
+    pub fn new(source_name: impl Into<String>, schema: Arc<Schema>) -> Self {
+        let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
+        let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
+        Self {
+            source_name: source_name.into(),
+            schema,
+            inputs: Vec::new(),
+            control_inputs: Vec::new(),
+            output,
+            control_output,
+            connectors: Vec::new(),
+        }
+    }
+
+    /// Register an external source connector and its decoder.
+    pub fn add_connector(
+        &mut self,
+        connector: Box<dyn SourceConnector>,
+        decoder: Arc<dyn RecordDecoder>,
+    ) {
+        self.connectors.push(ConnectorBinding {
+            connector,
+            decoder,
+            handle: None,
         });
+    }
+
+    fn activate_connectors(
+        connectors: &mut [ConnectorBinding],
+        processor_id: &str,
+    ) -> Vec<broadcast::Receiver<StreamData>> {
+        connectors
+            .iter_mut()
+            .map(|binding| binding.activate(processor_id))
+            .collect()
+    }
+
+    async fn shutdown_connectors(
+        connectors: &mut [ConnectorBinding],
+    ) -> Result<(), ProcessorError> {
+        for binding in connectors.iter_mut() {
+            binding.shutdown().await?;
+        }
+        Ok(())
     }
 }
 
@@ -155,29 +199,42 @@ impl Processor for DataSourceProcessor {
         let control_output = self.control_output.clone();
         let processor_id = self.source_name.clone();
         let mut base_inputs = std::mem::take(&mut self.inputs);
-        base_inputs.extend(self.activate_connectors());
+        let mut connectors = std::mem::take(&mut self.connectors);
+        let connector_inputs = Self::activate_connectors(&mut connectors, &processor_id);
+        base_inputs.extend(connector_inputs);
         let mut input_streams = fan_in_streams(base_inputs);
         let control_receivers = std::mem::take(&mut self.control_inputs);
         let mut control_streams = fan_in_streams(control_receivers);
         let mut control_active = !control_streams.is_empty();
+        println!("[DataSourceProcessor:{processor_id}] starting");
         tokio::spawn(async move {
+            let mut connectors = connectors;
             loop {
                 tokio::select! {
+                    biased;
                     control_item = control_streams.next(), if control_active => {
                         if let Some(result) = control_item {
                             let control_data = match result {
                                 Ok(data) => data,
                                 Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                                    return Err(ProcessorError::ProcessingError(format!(
+                                    let err = ProcessorError::ProcessingError(format!(
                                         "DataSource control input lagged by {} messages",
                                         skipped
-                                    )))
+                                    ));
+                                    Self::shutdown_connectors(&mut connectors).await?;
+                                    println!(
+                                        "[DataSourceProcessor:{processor_id}] stopped with error: {}",
+                                        err
+                                    );
+                                    return Err(err);
                                 }
                             };
                             let is_terminal = control_data.is_terminal();
                             let _ = control_output.send(control_data);
                             if is_terminal {
                                 println!("[DataSourceProcessor:{}] received StreamEnd (control)", processor_id);
+                                Self::shutdown_connectors(&mut connectors).await?;
+                                println!("[DataSourceProcessor:{processor_id}] stopped");
                                 return Ok(());
                             }
                             continue;
@@ -205,16 +262,28 @@ impl Processor for DataSourceProcessor {
 
                                 if is_terminal {
                                     println!("[DataSourceProcessor:{}] received StreamEnd (data)", processor_id);
+                                    Self::shutdown_connectors(&mut connectors).await?;
+                                    println!("[DataSourceProcessor:{processor_id}] stopped");
                                     return Ok(());
                                 }
                             }
                             Some(Err(BroadcastStreamRecvError::Lagged(skipped))) => {
-                                return Err(ProcessorError::ProcessingError(format!(
+                                let err = ProcessorError::ProcessingError(format!(
                                     "DataSource input lagged by {} messages",
                                     skipped
-                                )))
+                                ));
+                                Self::shutdown_connectors(&mut connectors).await?;
+                                println!(
+                                    "[DataSourceProcessor:{processor_id}] stopped with error: {}",
+                                    err
+                                );
+                                return Err(err);
                             }
-                            None => return Ok(()),
+                            None => {
+                                Self::shutdown_connectors(&mut connectors).await?;
+                                println!("[DataSourceProcessor:{processor_id}] stopped");
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -236,5 +305,11 @@ impl Processor for DataSourceProcessor {
 
     fn add_control_input(&mut self, receiver: broadcast::Receiver<StreamData>) {
         self.control_inputs.push(receiver);
+    }
+}
+
+impl DataSourceProcessor {
+    pub fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
     }
 }

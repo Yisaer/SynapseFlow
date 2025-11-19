@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use prometheus::{register_int_counter_vec, IntCounterVec};
 use rumqttc::{AsyncClient, ConnectionError, Event, MqttOptions, Packet, QoS, Transport};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use url::Url;
 
@@ -51,7 +51,7 @@ impl MqttSourceConfig {
     fn client_id(&self) -> String {
         self.client_id
             .clone()
-            .unwrap_or_else(|| self.source_name.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     }
 }
 
@@ -59,6 +59,7 @@ pub struct MqttSourceConnector {
     id: String,
     config: MqttSourceConfig,
     receiver: Option<mpsc::Receiver<Result<ConnectorEvent, ConnectorError>>>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 static MQTT_SOURCE_RECORDS_IN: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -85,6 +86,7 @@ impl MqttSourceConnector {
             id: id.into(),
             config,
             receiver: None,
+            shutdown_tx: None,
         }
     }
 }
@@ -102,35 +104,44 @@ impl SourceConnector for MqttSourceConnector {
         let (sender, receiver) = mpsc::channel(256);
         let config = self.config.clone();
         let connector_id = self.id.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        self.shutdown_tx = Some(shutdown_tx);
 
         if let Some(connector_key) = config.connector_key.clone() {
             let metrics_id = connector_id.clone();
             tokio::spawn(async move {
+                let mut shutdown_rx = shutdown_rx;
                 match acquire_shared_client(&connector_key).await {
                     Ok(shared_client) => {
                         let mut events = shared_client.subscribe();
-                        while let Ok(event) = events.recv().await {
-                            match event {
-                                Ok(SharedMqttEvent::Payload(payload)) => {
-                                    MQTT_SOURCE_RECORDS_IN
-                                        .with_label_values(&[metrics_id.as_str()])
-                                        .inc();
-                                    match sender.send(Ok(ConnectorEvent::Payload(payload))).await {
-                                        Ok(_) => {
-                                            MQTT_SOURCE_RECORDS_OUT
+                        loop {
+                            tokio::select! {
+                                _ = &mut shutdown_rx => break,
+                                event = events.recv() => {
+                                    match event {
+                                        Ok(Ok(SharedMqttEvent::Payload(payload))) => {
+                                            MQTT_SOURCE_RECORDS_IN
                                                 .with_label_values(&[metrics_id.as_str()])
                                                 .inc();
+                                            match sender.send(Ok(ConnectorEvent::Payload(payload))).await {
+                                                Ok(_) => {
+                                                    MQTT_SOURCE_RECORDS_OUT
+                                                        .with_label_values(&[metrics_id.as_str()])
+                                                        .inc();
+                                                }
+                                                Err(_) => break,
+                                            }
+                                        }
+                                        Ok(Ok(SharedMqttEvent::EndOfStream)) => {
+                                            let _ = sender.send(Ok(ConnectorEvent::EndOfStream)).await;
+                                            break;
+                                        }
+                                        Ok(Err(err)) => {
+                                            let _ = sender.send(Err(err)).await;
+                                            break;
                                         }
                                         Err(_) => break,
                                     }
-                                }
-                                Ok(SharedMqttEvent::EndOfStream) => {
-                                    let _ = sender.send(Ok(ConnectorEvent::EndOfStream)).await;
-                                    break;
-                                }
-                                Err(err) => {
-                                    let _ = sender.send(Err(err)).await;
-                                    break;
                                 }
                             }
                         }
@@ -143,7 +154,8 @@ impl SourceConnector for MqttSourceConnector {
         } else {
             tokio::spawn(async move {
                 if let Err(err) =
-                    run_standalone_loop(connector_id.clone(), config, sender.clone()).await
+                    run_standalone_loop(connector_id.clone(), config, sender.clone(), shutdown_rx)
+                        .await
                 {
                     let _ = sender.send(Err(err)).await;
                 }
@@ -152,7 +164,17 @@ impl SourceConnector for MqttSourceConnector {
 
         self.receiver = Some(receiver);
         let stream = ReceiverStream::new(self.receiver.take().unwrap());
+        println!("[MqttSourceConnector:{}] starting", self.id);
         Ok(Box::pin(stream))
+    }
+
+    fn close(&mut self) -> Result<(), ConnectorError> {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        self.receiver = None;
+        println!("[MqttSourceConnector:{}] closed", self.id);
+        Ok(())
     }
 }
 
@@ -160,6 +182,7 @@ async fn run_standalone_loop(
     connector_id: String,
     config: MqttSourceConfig,
     sender: mpsc::Sender<Result<ConnectorEvent, ConnectorError>>,
+    mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), ConnectorError> {
     let mut mqtt_options = build_mqtt_options(&config)?;
     mqtt_options.set_keep_alive(Duration::from_secs(30));
@@ -175,25 +198,30 @@ async fn run_standalone_loop(
         .map_err(|e| ConnectorError::Connection(e.to_string()))?;
 
     loop {
-        match event_loop.poll().await {
-            Ok(Event::Incoming(Packet::Publish(publish))) => {
-                MQTT_SOURCE_RECORDS_IN
-                    .with_label_values(&[connector_id.as_str()])
-                    .inc();
-                let payload = publish.payload.to_vec();
-                match sender.send(Ok(ConnectorEvent::Payload(payload))).await {
-                    Ok(_) => {
-                        MQTT_SOURCE_RECORDS_OUT
+        tokio::select! {
+            _ = &mut shutdown_rx => break,
+            event = event_loop.poll() => {
+                match event {
+                    Ok(Event::Incoming(Packet::Publish(publish))) => {
+                        MQTT_SOURCE_RECORDS_IN
                             .with_label_values(&[connector_id.as_str()])
                             .inc();
+                        let payload = publish.payload.to_vec();
+                        match sender.send(Ok(ConnectorEvent::Payload(payload))).await {
+                            Ok(_) => {
+                                MQTT_SOURCE_RECORDS_OUT
+                                    .with_label_values(&[connector_id.as_str()])
+                                    .inc();
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    Err(_) => break,
+                    Ok(Event::Incoming(Packet::Disconnect)) => break,
+                    Ok(_) => {}
+                    Err(ConnectionError::RequestsDone) => break,
+                    Err(err) => return Err(ConnectorError::Connection(err.to_string())),
                 }
             }
-            Ok(Event::Incoming(Packet::Disconnect)) => break,
-            Ok(_) => {}
-            Err(ConnectionError::RequestsDone) => break,
-            Err(err) => return Err(ConnectorError::Connection(err.to_string())),
         }
     }
 

@@ -6,12 +6,12 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct Message {
     source: Arc<str>,
-    keys: Vec<String>,
+    keys: Vec<Arc<str>>,
     values: Vec<Value>,
 }
 
 impl Message {
-    pub fn new(source: impl Into<Arc<str>>, keys: Vec<String>, values: Vec<Value>) -> Self {
+    pub fn new(source: impl Into<Arc<str>>, keys: Vec<Arc<str>>, values: Vec<Value>) -> Self {
         debug_assert_eq!(
             keys.len(),
             values.len(),
@@ -29,14 +29,21 @@ impl Message {
     }
 
     pub fn entries(&self) -> impl Iterator<Item = (&str, &Value)> {
-        self.keys.iter().zip(self.values.iter()).map(|(k, v)| (k.as_str(), v))
+        self.keys
+            .iter()
+            .zip(self.values.iter())
+            .map(|(k, v)| (k.as_ref(), v))
     }
 
     pub fn value(&self, column: &str) -> Option<&Value> {
         self.keys
             .iter()
-            .position(|k| k == column)
+            .position(|k| k.as_ref() == column)
             .and_then(|idx| self.values.get(idx))
+    }
+
+    pub fn value_by_index(&self, index: usize) -> Option<&Value> {
+        self.values.get(index)
     }
 }
 
@@ -132,9 +139,23 @@ impl Tuple {
             .and_then(|msg| msg.value(column))
     }
 
+    pub fn value_by_index(&self, source: &str, index: usize) -> Option<&Value> {
+        if source.is_empty() {
+            return None;
+        }
+        self.messages
+            .iter()
+            .find(|msg| msg.source() == source)
+            .and_then(|msg| msg.value_by_index(index))
+    }
+
     pub fn len(&self) -> usize {
-        let aff_len = self.affiliate.as_ref().map(|aff| aff.index.len()).unwrap_or(0);
-        let msg_len: usize = self.messages.iter().map(|msg| msg.keys.len()).sum();
+        let aff_len = self
+            .affiliate
+            .as_ref()
+            .map(|aff| aff.index.len())
+            .unwrap_or(0);
+        let msg_len: usize = self.messages.iter().map(|msg| msg.values.len()).sum();
         aff_len + msg_len
     }
 

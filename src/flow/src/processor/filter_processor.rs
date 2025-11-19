@@ -84,10 +84,12 @@ impl Processor for FilterProcessor {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
         let filter_expr = self.physical_filter.scalar_predicate.clone();
+        println!("[FilterProcessor:{id}] starting");
 
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    biased;
                     control_item = control_streams.next(), if control_active => {
                         if let Some(result) = control_item {
                             let control_data = match result {
@@ -103,6 +105,7 @@ impl Processor for FilterProcessor {
                             let _ = control_output.send(control_data);
                             if is_terminal {
                                 println!("[FilterProcessor:{id}] received StreamEnd (control)");
+                                println!("[FilterProcessor:{id}] stopped");
                                 return Ok(());
                             }
                             continue;
@@ -137,16 +140,22 @@ impl Processor for FilterProcessor {
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
                                 if is_terminal {
                                     println!("[FilterProcessor:{id}] received StreamEnd (data)");
+                                    println!("[FilterProcessor:{id}] stopped");
                                     return Ok(());
                                 }
                             }
                             Some(Err(BroadcastStreamRecvError::Lagged(skipped))) => {
-                                return Err(ProcessorError::ProcessingError(format!(
+                                let err = ProcessorError::ProcessingError(format!(
                                     "FilterProcessor input lagged by {} messages",
                                     skipped
-                                )))
+                                ));
+                                println!("[FilterProcessor:{id}] stopped with error: {}", err);
+                                return Err(err);
                             }
-                            None => return Ok(()),
+                            None => {
+                                println!("[FilterProcessor:{id}] stopped");
+                                return Ok(());
+                            }
                         }
                     }
                 }

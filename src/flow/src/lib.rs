@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod codec;
 pub mod connector;
 pub mod expr;
@@ -5,10 +6,15 @@ pub mod model;
 pub mod planner;
 pub mod processor;
 
+pub use catalog::{global_catalog, Catalog, CatalogError};
 pub use codec::{
     CodecError, CollectionEncoder, EncodeError, JsonDecoder, JsonEncoder, RecordDecoder,
 };
-pub use datatypes::Schema;
+pub use datatypes::{
+    BooleanType, ColumnSchema, ConcreteDatatype, Float32Type, Float64Type, Int16Type, Int32Type,
+    Int64Type, Int8Type, ListType, Schema, StringType, StructField, StructType, Uint16Type,
+    Uint32Type, Uint64Type, Uint8Type,
+};
 pub use expr::sql_conversion;
 pub use expr::{
     convert_expr_to_scalar, convert_select_stmt_to_scalar, extract_select_expressions, BinaryFunc,
@@ -32,9 +38,29 @@ fn build_physical_plan_from_sql(
     sql: &str,
 ) -> Result<Arc<dyn planner::physical::PhysicalPlan>, Box<dyn std::error::Error>> {
     let select_stmt = parser::parse_sql(sql)?;
+    let schema_binding = build_schema_binding(&select_stmt)?;
     let logical_plan = create_logical_plan(select_stmt)?;
-    let physical_plan = create_physical_plan(logical_plan)?;
+    let physical_plan = create_physical_plan(logical_plan, &schema_binding)?;
     Ok(physical_plan)
+}
+
+fn build_schema_binding(
+    select_stmt: &parser::SelectStmt,
+) -> Result<crate::expr::sql_conversion::SchemaBinding, Box<dyn std::error::Error>> {
+    use crate::expr::sql_conversion::{SchemaBinding, SchemaBindingEntry};
+    let catalog = catalog::global_catalog();
+    let mut entries = Vec::new();
+    for source in &select_stmt.source_infos {
+        let schema = catalog
+            .get(&source.name)
+            .ok_or_else(|| format!("schema for source '{}' not found", source.name))?;
+        entries.push(SchemaBindingEntry {
+            source_name: source.name.clone(),
+            alias: source.alias.clone(),
+            schema,
+        });
+    }
+    Ok(SchemaBinding::new(entries))
 }
 
 /// Create a processor pipeline from SQL, wiring it to the provided sink processors.

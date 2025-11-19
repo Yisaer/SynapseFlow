@@ -53,6 +53,7 @@ impl SinkConnector for MockSinkConnector {
     }
 
     async fn ready(&mut self) -> Result<(), SinkConnectorError> {
+        println!("[MockSinkConnector:{}] ready", self.id);
         Ok(())
     }
 
@@ -68,6 +69,7 @@ impl SinkConnector for MockSinkConnector {
 
     async fn close(&mut self) -> Result<(), SinkConnectorError> {
         self.sender.take();
+        println!("[MockSinkConnector:{}] closed", self.id);
         Ok(())
     }
 }

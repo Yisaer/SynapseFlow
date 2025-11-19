@@ -38,10 +38,17 @@ impl PhysicalProjectField {
     }
 
     /// Create from a logical ProjectField by compiling the expression
-    pub fn from_logical(field_name: String, original_expr: Expr) -> Result<Self, String> {
+    pub fn from_logical(
+        field_name: String,
+        original_expr: Expr,
+        bindings: &crate::expr::sql_conversion::SchemaBinding,
+    ) -> Result<Self, String> {
         // Compile the sqlparser expression to ScalarExpr
-        let compiled_expr = crate::expr::sql_conversion::convert_expr_to_scalar(&original_expr)
-            .map_err(|e| format!("Failed to compile expression: {}", e))?;
+        let compiled_expr = crate::expr::sql_conversion::convert_expr_to_scalar_with_bindings(
+            &original_expr,
+            bindings,
+        )
+        .map_err(|e| format!("Failed to compile expression: {}", e))?;
 
         Ok(Self {
             field_name,

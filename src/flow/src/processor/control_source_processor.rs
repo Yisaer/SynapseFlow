@@ -41,8 +41,15 @@ impl ControlSourceProcessor {
 
     /// Send StreamData to all downstream processors
     pub async fn send(&self, data: StreamData) -> Result<(), ProcessorError> {
-        if data.is_control() {
-            let _ = self.control_output.send(data.clone());
+        if let StreamData::Control(signal) = &data {
+            if signal.routes_via_control() {
+                self.control_output
+                    .send(data.clone())
+                    .map_err(|_| ProcessorError::ChannelClosed)?;
+            }
+            if !signal.routes_via_data() {
+                return Ok(());
+            }
         }
         self.output
             .send(data)
@@ -77,6 +84,7 @@ impl Processor for ControlSourceProcessor {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
         let processor_id = self.id.clone();
+        println!("[ControlSourceProcessor:{processor_id}] starting");
 
         tokio::spawn(async move {
             let input = match input_result {
@@ -89,19 +97,38 @@ impl Processor for ControlSourceProcessor {
                 let data = match item {
                     Ok(data) => data,
                     Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                        return Err(ProcessorError::ProcessingError(format!(
+                        let err = ProcessorError::ProcessingError(format!(
                             "Control source input lagged by {} messages",
                             skipped
-                        )))
+                        ));
+                        println!(
+                            "[ControlSourceProcessor:{processor_id}] stopped with error: {}",
+                            err
+                        );
+                        return Err(err);
                     }
                 };
-                if data.is_control() {
-                    let _ = control_output.send(data.clone());
-                }
+
                 let is_terminal = data.is_terminal();
-                output
-                    .send(data)
-                    .map_err(|_| ProcessorError::ChannelClosed)?;
+                let mut deliver_to_data = true;
+
+                if let StreamData::Control(signal) = &data {
+                    if signal.routes_via_control() {
+                        control_output
+                            .send(data.clone())
+                            .map_err(|_| ProcessorError::ChannelClosed)?;
+                    }
+                    if !signal.routes_via_data() {
+                        deliver_to_data = false;
+                    }
+                }
+
+                if deliver_to_data {
+                    output
+                        .send(data)
+                        .map_err(|_| ProcessorError::ChannelClosed)?;
+                }
+
                 if is_terminal {
                     println!("[ControlSourceProcessor:{processor_id}] received StreamEnd");
                     return Ok(());
@@ -109,6 +136,7 @@ impl Processor for ControlSourceProcessor {
             }
 
             // Input closed without explicit StreamEnd, propagate shutdown.
+            println!("[ControlSourceProcessor:{processor_id}] stopping (input closed)");
             output
                 .send(StreamData::stream_end())
                 .map_err(|_| ProcessorError::ChannelClosed)?;

@@ -1,4 +1,5 @@
 use crate::planner::physical::{BasePhysicalPlan, PhysicalPlan};
+use datatypes::Schema;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -10,17 +11,37 @@ use std::sync::Arc;
 pub struct PhysicalDataSource {
     pub base: BasePhysicalPlan,
     pub source_name: String,
+    pub alias: Option<String>,
+    pub schema: Arc<Schema>,
 }
 
 impl PhysicalDataSource {
     /// Create a new PhysicalDataSource
-    pub fn new(source_name: String, index: i64) -> Self {
+    pub fn new(
+        source_name: String,
+        alias: Option<String>,
+        schema: Arc<Schema>,
+        index: i64,
+    ) -> Self {
         let base = BasePhysicalPlan::new_leaf(index);
-        Self { base, source_name }
+        Self {
+            base,
+            source_name,
+            alias,
+            schema,
+        }
     }
 
     pub fn source_name(&self) -> &str {
         &self.source_name
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
     }
 }
 

@@ -189,9 +189,14 @@ impl MqttSinkConnector {
             let client = acquire_shared_client(&connector_key)
                 .await
                 .map_err(|err| SinkConnectorError::Other(err.to_string()))?;
+            println!(
+                "[MqttSinkConnector:{}] starting with shared client {}",
+                self.id, connector_key
+            );
             self.client = Some(SinkClient::Shared(client));
         } else {
             let standalone = StandaloneMqttClient::new(&self.config).await?;
+            println!("[MqttSinkConnector:{}] starting standalone client", self.id);
             self.client = Some(SinkClient::Standalone(standalone));
         }
         Ok(())
@@ -250,6 +255,7 @@ impl SinkConnector for MqttSinkConnector {
     async fn close(&mut self) -> Result<(), SinkConnectorError> {
         if let Some(client) = self.client.take() {
             client.shutdown().await?;
+            println!("[MqttSinkConnector:{}] closed", self.id);
         }
         Ok(())
     }

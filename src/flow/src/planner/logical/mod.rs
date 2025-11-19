@@ -47,7 +47,11 @@ pub fn create_logical_plan(select_stmt: SelectStmt) -> Result<Arc<dyn LogicalPla
 
     let mut current_plans: Vec<Arc<dyn LogicalPlan>> = Vec::new();
     for source_info in &select_stmt.source_infos {
-        let datasource = DataSource::new(source_info.name.clone(), current_index);
+        let datasource = DataSource::new(
+            source_info.name.clone(),
+            source_info.alias.clone(),
+            current_index,
+        );
         current_plans.push(Arc::new(datasource));
         current_index += 1;
     }

@@ -5,10 +5,16 @@ use axum::{
     response::IntoResponse,
     routing::{delete, post},
 };
+use flow::catalog::global_catalog;
 use flow::connector::sink::nop::NopSinkConnector;
 use flow::connector::{MqttSinkConfig, MqttSinkConnector, MqttSourceConfig, MqttSourceConnector};
 use flow::processor::Processor;
 use flow::processor::processor_builder::{PlanProcessor, ProcessorPipeline};
+use flow::{
+    BooleanType, ColumnSchema, ConcreteDatatype, Float32Type, Float64Type, Int8Type, Int16Type,
+    Int32Type, Int64Type, ListType, Schema, StringType, StructType, Uint8Type, Uint16Type,
+    Uint32Type, Uint64Type,
+};
 use flow::{JsonDecoder, JsonEncoder, SinkProcessor, create_pipeline};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,6 +63,30 @@ struct CreatePipelineRequest {
     qos: Option<u8>,
 }
 
+#[derive(Deserialize)]
+struct CreateSchemaRequest {
+    source: String,
+    columns: Vec<SchemaColumnRequest>,
+}
+
+#[derive(Deserialize)]
+struct SchemaColumnRequest {
+    name: String,
+    data_type: String,
+}
+
+#[derive(Serialize)]
+struct SchemaColumnInfo {
+    name: String,
+    data_type: String,
+}
+
+#[derive(Serialize)]
+struct SchemaInfo {
+    source: String,
+    columns: Vec<SchemaColumnInfo>,
+}
+
 #[derive(Serialize)]
 struct CreatePipelineResponse {
     id: String,
@@ -81,6 +111,8 @@ pub async fn start_server(addr: String) -> Result<(), Box<dyn std::error::Error 
         )
         .route("/pipelines/:id/start", post(start_pipeline_handler))
         .route("/pipelines/:id", delete(delete_pipeline_handler))
+        .route("/schemas", post(create_schema_handler).get(list_schemas))
+        .route("/schemas/:source", delete(delete_schema_handler))
         .with_state(state);
 
     let addr: SocketAddr = addr.parse()?;
@@ -105,7 +137,10 @@ async fn create_pipeline_handler(
 
     let pipeline = match build_pipeline(&req) {
         Ok(p) => p,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+        Err(err) => {
+            println!("[manager] failed to create pipeline {}: {}", req.id, err);
+            return (StatusCode::BAD_REQUEST, err).into_response();
+        }
     };
 
     pipelines.insert(
@@ -115,6 +150,7 @@ async fn create_pipeline_handler(
             status: PipelineStatus::Created,
         },
     );
+    println!("[manager] pipeline {} created", req.id);
 
     (
         StatusCode::CREATED,
@@ -137,11 +173,13 @@ async fn start_pipeline_handler(
     };
 
     if let PipelineStatus::Running = entry.status {
+        println!("[manager] pipeline {} already running", id);
         return (StatusCode::OK, format!("pipeline {id} already running")).into_response();
     }
 
     entry.pipeline.start();
     entry.status = PipelineStatus::Running;
+    println!("[manager] pipeline {} started", id);
     (StatusCode::OK, format!("pipeline {id} started")).into_response()
 }
 
@@ -163,6 +201,7 @@ async fn delete_pipeline_handler(
                 )
                     .into_response();
             }
+            println!("[manager] pipeline {id} quick close completed");
         }
         PipelineStatus::Created => {}
     }
@@ -180,6 +219,69 @@ async fn list_pipelines(State(state): State<AppState>) -> impl IntoResponse {
         })
         .collect();
     Json(list)
+}
+
+async fn create_schema_handler(Json(req): Json<CreateSchemaRequest>) -> impl IntoResponse {
+    if req.source.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "source must not be empty".to_string(),
+        )
+            .into_response();
+    }
+    if req.columns.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "schema must contain at least one column".to_string(),
+        )
+            .into_response();
+    }
+
+    let schema = match build_schema_from_request(&req) {
+        Ok(schema) => schema,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+
+    let catalog = global_catalog();
+    match catalog.insert(req.source.clone(), schema) {
+        Ok(_) => {
+            println!("[manager] schema {} created", req.source);
+            (StatusCode::CREATED, Json(req.source)).into_response()
+        }
+        Err(err) => (
+            StatusCode::CONFLICT,
+            format!("failed to create schema: {}", err),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_schemas() -> impl IntoResponse {
+    let catalog = global_catalog();
+    let payload: Vec<SchemaInfo> = catalog
+        .list()
+        .into_iter()
+        .map(|(source, schema)| SchemaInfo {
+            source,
+            columns: schema
+                .column_schemas()
+                .iter()
+                .map(|col| SchemaColumnInfo {
+                    name: col.name.clone(),
+                    data_type: datatype_name(&col.data_type),
+                })
+                .collect(),
+        })
+        .collect();
+    Json(payload)
+}
+
+async fn delete_schema_handler(Path(source): Path<String>) -> impl IntoResponse {
+    let catalog = global_catalog();
+    match catalog.remove(&source) {
+        Ok(_) => (StatusCode::OK, format!("schema {source} deleted")).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, format!("schema {source} not found")).into_response(),
+    }
 }
 
 fn build_pipeline(req: &CreatePipelineRequest) -> Result<ProcessorPipeline, String> {
@@ -247,6 +349,7 @@ fn attach_mqtt_sources(
     for processor in pipeline.middle_processors.iter_mut() {
         if let PlanProcessor::DataSource(ds) = processor {
             let source_id = ds.id().to_string();
+            let schema = ds.schema();
             let config = MqttSourceConfig::new(
                 source_id.clone(),
                 broker_url.to_string(),
@@ -255,7 +358,7 @@ fn attach_mqtt_sources(
             );
             let connector =
                 MqttSourceConnector::new(format!("{source_id}_source_connector"), config);
-            let decoder = Arc::new(JsonDecoder::new(source_id));
+            let decoder = Arc::new(JsonDecoder::new(source_id, schema));
             ds.add_connector(Box::new(connector), decoder);
             attached = true;
         }
@@ -266,4 +369,62 @@ fn attach_mqtt_sources(
     } else {
         Err("no datasource processors available to attach MQTT source".into())
     }
+}
+
+fn build_schema_from_request(req: &CreateSchemaRequest) -> Result<Schema, String> {
+    let columns: Result<Vec<ColumnSchema>, String> = req
+        .columns
+        .iter()
+        .map(|col| {
+            parse_datatype(&col.data_type)
+                .map(|datatype| ColumnSchema::new(req.source.clone(), col.name.clone(), datatype))
+        })
+        .collect();
+    columns.map(Schema::new)
+}
+
+fn parse_datatype(datatype: &str) -> Result<ConcreteDatatype, String> {
+    match datatype.to_ascii_lowercase().as_str() {
+        "null" => Ok(ConcreteDatatype::Null),
+        "bool" | "boolean" => Ok(ConcreteDatatype::Bool(BooleanType)),
+        "int8" => Ok(ConcreteDatatype::Int8(Int8Type)),
+        "int16" => Ok(ConcreteDatatype::Int16(Int16Type)),
+        "int32" => Ok(ConcreteDatatype::Int32(Int32Type)),
+        "int64" => Ok(ConcreteDatatype::Int64(Int64Type)),
+        "uint8" => Ok(ConcreteDatatype::Uint8(Uint8Type)),
+        "uint16" => Ok(ConcreteDatatype::Uint16(Uint16Type)),
+        "uint32" => Ok(ConcreteDatatype::Uint32(Uint32Type)),
+        "uint64" => Ok(ConcreteDatatype::Uint64(Uint64Type)),
+        "float32" => Ok(ConcreteDatatype::Float32(Float32Type)),
+        "float64" => Ok(ConcreteDatatype::Float64(Float64Type)),
+        "string" => Ok(ConcreteDatatype::String(StringType)),
+        "list" => Ok(ConcreteDatatype::List(ListType::new(Arc::new(
+            ConcreteDatatype::Null,
+        )))),
+        "struct" => Ok(ConcreteDatatype::Struct(
+            StructType::new(Default::default()),
+        )),
+        other => Err(format!("unsupported data type: {}", other)),
+    }
+}
+
+fn datatype_name(datatype: &ConcreteDatatype) -> String {
+    match datatype {
+        ConcreteDatatype::Null => "null",
+        ConcreteDatatype::Float32(_) => "float32",
+        ConcreteDatatype::Float64(_) => "float64",
+        ConcreteDatatype::Int8(_) => "int8",
+        ConcreteDatatype::Int16(_) => "int16",
+        ConcreteDatatype::Int32(_) => "int32",
+        ConcreteDatatype::Int64(_) => "int64",
+        ConcreteDatatype::Uint8(_) => "uint8",
+        ConcreteDatatype::Uint16(_) => "uint16",
+        ConcreteDatatype::Uint32(_) => "uint32",
+        ConcreteDatatype::Uint64(_) => "uint64",
+        ConcreteDatatype::String(_) => "string",
+        ConcreteDatatype::Struct(_) => "struct",
+        ConcreteDatatype::List(_) => "list",
+        ConcreteDatatype::Bool(_) => "bool",
+    }
+    .to_string()
 }

@@ -7,11 +7,8 @@ use std::sync::Arc;
 /// A scalar expression, which can be evaluated to a value.
 #[derive(Clone)]
 pub enum ScalarExpr {
-    /// A column reference by source name and column name
-    Column {
-        source_name: String,
-        column_name: String,
-    },
+    /// A column reference
+    Column(ColumnRef),
     /// Wildcard reference (`*` or `source.*`)
     Wildcard {
         /// Optional source/table qualifier
@@ -53,6 +50,17 @@ pub enum ScalarExpr {
     },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum ColumnRef {
+    ByName {
+        column_name: String,
+    },
+    ByIndex {
+        source_name: String,
+        column_index: usize,
+    },
+}
+
 impl ScalarExpr {
     /// Evaluate this expression against a collection row by row.
     pub fn eval_with_collection(
@@ -69,29 +77,25 @@ impl ScalarExpr {
     /// Evaluate this expression against a single tuple (row).
     pub fn eval_with_tuple(&self, tuple: &Tuple) -> Result<Value, EvalError> {
         match self {
-            ScalarExpr::Column {
-                source_name,
-                column_name,
-            } => {
-                if let Some(value) = tuple.value_by_name(source_name, column_name) {
-                    Ok(value.clone())
-                } else if source_name.is_empty() {
-                    tuple
-                        .messages()
-                        .iter()
-                        .find_map(|message| message.value(column_name))
-                        .cloned()
-                        .ok_or_else(|| EvalError::ColumnNotFound {
-                            source: source_name.clone(),
-                            column: column_name.clone(),
-                        })
-                } else {
-                    Err(EvalError::ColumnNotFound {
+            ScalarExpr::Column(column_ref) => match column_ref {
+                ColumnRef::ByIndex {
+                    source_name,
+                    column_index,
+                } => tuple
+                    .value_by_index(source_name, *column_index)
+                    .cloned()
+                    .ok_or_else(|| EvalError::ColumnNotFound {
                         source: source_name.clone(),
+                        column: format!("#{}", column_index),
+                    }),
+                ColumnRef::ByName { column_name } => tuple
+                    .value_by_name("", column_name)
+                    .cloned()
+                    .ok_or_else(|| EvalError::ColumnNotFound {
+                        source: "".to_string(),
                         column: column_name.clone(),
-                    })
-                }
-            }
+                    }),
+            },
             ScalarExpr::Wildcard { source_name } => {
                 let selected: Vec<_> = tuple
                     .entries()
@@ -181,24 +185,34 @@ impl ScalarExpr {
                 }
             }
             ScalarExpr::CallFunc { func, args } => {
-                let mut arg_vectors = Vec::with_capacity(args.len());
+                let mut row_args = Vec::with_capacity(args.len());
                 for arg_expr in args {
-                    arg_vectors.push(vec![arg_expr.eval_with_tuple(tuple)?]);
+                    row_args.push(arg_expr.eval_with_tuple(tuple)?);
                 }
-                func.validate_vectorized(&arg_vectors)?;
-                let results = func.eval_vectorized(&arg_vectors)?;
-                results.into_iter().next().ok_or(EvalError::NotImplemented {
-                    feature: "Custom function returned no result".to_string(),
-                })
+                func.validate_row(&row_args)?;
+                func.eval_row(&row_args)
             }
         }
     }
 
     /// Create a column reference expression by source and column name
     pub fn column(source_name: impl Into<String>, column_name: impl Into<String>) -> Self {
-        ScalarExpr::Column {
-            source_name: source_name.into(),
-            column_name: column_name.into(),
+        Self::column_with_index(source_name, column_name, None)
+    }
+
+    pub fn column_with_index(
+        source_name: impl Into<String>,
+        column_name: impl Into<String>,
+        column_index: Option<usize>,
+    ) -> Self {
+        match column_index {
+            Some(idx) => ScalarExpr::Column(ColumnRef::ByIndex {
+                source_name: source_name.into(),
+                column_index: idx,
+            }),
+            None => ScalarExpr::Column(ColumnRef::ByName {
+                column_name: column_name.into(),
+            }),
         }
     }
 
@@ -264,14 +278,10 @@ impl ScalarExpr {
 
     /// Get the source and column names if this is a column reference
     pub fn as_column(&self) -> Option<(&str, &str)> {
-        if let ScalarExpr::Column {
-            source_name,
-            column_name,
-        } = self
-        {
-            Some((source_name, column_name))
-        } else {
-            None
+        match self {
+            ScalarExpr::Column(ColumnRef::ByName { column_name }) => Some(("", column_name)),
+            ScalarExpr::Column(ColumnRef::ByIndex { source_name, .. }) => Some((source_name, "")),
+            _ => None,
         }
     }
 
@@ -293,10 +303,13 @@ impl ScalarExpr {
 impl std::fmt::Debug for ScalarExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScalarExpr::Column {
+            ScalarExpr::Column(ColumnRef::ByName { column_name }) => {
+                write!(f, "Column({})", column_name)
+            }
+            ScalarExpr::Column(ColumnRef::ByIndex {
                 source_name,
-                column_name,
-            } => write!(f, "Column({}.{})", source_name, column_name),
+                column_index,
+            }) => write!(f, "Column({}@{})", source_name, column_index),
             ScalarExpr::Wildcard { source_name } => {
                 write!(f, "Wildcard({:?})", source_name)
             }
@@ -322,15 +335,19 @@ impl PartialEq for ScalarExpr {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                ScalarExpr::Column {
+                ScalarExpr::Column(ColumnRef::ByName { column_name: ca }),
+                ScalarExpr::Column(ColumnRef::ByName { column_name: cb }),
+            ) => ca == cb,
+            (
+                ScalarExpr::Column(ColumnRef::ByIndex {
                     source_name: sa,
-                    column_name: ca,
-                },
-                ScalarExpr::Column {
+                    column_index: ia,
+                }),
+                ScalarExpr::Column(ColumnRef::ByIndex {
                     source_name: sb,
-                    column_name: cb,
-                },
-            ) => sa == sb && ca == cb,
+                    column_index: ib,
+                }),
+            ) => sa == sb && ia == ib,
             (
                 ScalarExpr::Wildcard { source_name: sa },
                 ScalarExpr::Wildcard { source_name: sb },

@@ -29,6 +29,11 @@ pub trait SourceConnector: Send + Sync + 'static {
     fn id(&self) -> &str;
     /// Subscribe to the underlying source and obtain an async payload stream.
     fn subscribe(&mut self) -> Result<ConnectorStream, ConnectorError>;
+
+    /// Signal that no further data should be produced (default no-op).
+    fn close(&mut self) -> Result<(), ConnectorError> {
+        Ok(())
+    }
 }
 
 /// Error type shared by connectors.

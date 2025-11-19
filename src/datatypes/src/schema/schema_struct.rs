@@ -42,4 +42,9 @@ impl Schema {
     pub fn contains_column(&self, name: &str) -> bool {
         self.name_to_index.contains_key(name)
     }
+
+    /// Get column index by name if it exists.
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.name_to_index.get(name).copied()
+    }
 }

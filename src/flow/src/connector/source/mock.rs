@@ -40,8 +40,15 @@ impl SourceConnector for MockSourceConnector {
             .payload_rx
             .take()
             .ok_or_else(|| ConnectorError::AlreadySubscribed(self.id.clone()))?;
+        println!("[MockSourceConnector:{}] starting", self.id);
 
         Ok(Box::pin(ReceiverStream::new(receiver)))
+    }
+
+    fn close(&mut self) -> Result<(), ConnectorError> {
+        self.payload_rx = None;
+        println!("[MockSourceConnector:{}] closed", self.id);
+        Ok(())
     }
 }
 

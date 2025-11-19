@@ -20,7 +20,17 @@ impl SinkConnector for NopSinkConnector {
         &self.id
     }
 
+    async fn ready(&mut self) -> Result<(), SinkConnectorError> {
+        println!("[NopSinkConnector:{}] ready", self.id);
+        Ok(())
+    }
+
     async fn send(&mut self, _payload: &[u8]) -> Result<(), SinkConnectorError> {
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), SinkConnectorError> {
+        println!("[NopSinkConnector:{}] closed", self.id);
         Ok(())
     }
 }

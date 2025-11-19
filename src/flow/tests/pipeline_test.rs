@@ -3,7 +3,8 @@
 //! This module exercises both `create_pipeline_with_log_sink` (default/testing)
 //! and the customizable `create_pipeline` API that accepts user-defined sinks.
 
-use datatypes::Value;
+use datatypes::{ColumnSchema, ConcreteDatatype, Schema, Value};
+use flow::catalog::global_catalog;
 use flow::connector::MockSinkConnector;
 use flow::create_pipeline;
 use flow::create_pipeline_with_log_sink;
@@ -34,6 +35,8 @@ struct ColumnCheck {
 async fn run_test_case(test_case: TestCase) {
     println!("Running test: {}", test_case.name);
 
+    install_stream_schema(&test_case.input_data);
+
     // Create pipeline from SQL
     let mut pipeline = create_pipeline_with_log_sink(test_case.sql, true).expect(&format!(
         "Failed to create pipeline for: {}",
@@ -50,17 +53,16 @@ async fn run_test_case(test_case: TestCase) {
         .map(|(col_name, values)| ("stream".to_string(), col_name, values))
         .collect();
 
-    let test_batch = batch_from_columns_simple(columns)
-        .expect(&format!("Failed to create test RecordBatch for: {}", test_case.name));
+    let test_batch = batch_from_columns_simple(columns).expect(&format!(
+        "Failed to create test RecordBatch for: {}",
+        test_case.name
+    ));
 
     let stream_data = StreamData::collection(Box::new(test_batch));
     pipeline
         .send_stream_data("stream", stream_data)
         .await
-        .expect(&format!(
-            "Failed to send test data for: {}",
-            test_case.name
-        ));
+        .expect(&format!("Failed to send test data for: {}", test_case.name));
 
     // Receive and verify results
     let mut output = pipeline
@@ -69,8 +71,7 @@ async fn run_test_case(test_case: TestCase) {
     let timeout_duration = Duration::from_secs(5);
     let received_data = timeout(timeout_duration, output.recv())
         .await
-        .unwrap_or_else(|_| panic!("Timeout waiting for output for: {}",
-            test_case.name))
+        .unwrap_or_else(|_| panic!("Timeout waiting for output for: {}", test_case.name))
         .unwrap_or_else(|| panic!("Failed to receive output for: {}", test_case.name));
 
     match received_data {
@@ -110,11 +111,9 @@ async fn run_test_case(test_case: TestCase) {
                         values.push(value.clone());
                     }
                     assert_eq!(
-                        values,
-                        check.expected_values,
+                        values, check.expected_values,
                         "Wrong values in column {} for test: {}",
-                        check.expected_name,
-                        test_case.name
+                        check.expected_name, test_case.name
                     );
                 }
             }
@@ -305,6 +304,8 @@ async fn test_create_pipeline_various_queries() {
 
 #[tokio::test]
 async fn test_create_pipeline_with_custom_sink_connectors() {
+    install_stream_schema(&[("a".to_string(), vec![Value::Int64(10)])]);
+
     let mut sink = SinkProcessor::new("custom_sink");
     let (connector, mut handle) = MockSinkConnector::new("custom_sink_connector");
     sink.add_connector(Box::new(connector), Arc::new(JsonEncoder::new("json")));
@@ -335,4 +336,20 @@ async fn test_create_pipeline_with_custom_sink_connectors() {
     assert_eq!(json_payload, json!([{"a":10}]));
 
     pipeline.close().await.expect("close pipeline");
+}
+
+fn install_stream_schema(columns: &[(String, Vec<Value>)]) {
+    let schema_columns = columns
+        .iter()
+        .map(|(name, values)| {
+            let datatype = values
+                .iter()
+                .find(|v| !matches!(v, Value::Null))
+                .map(Value::datatype)
+                .unwrap_or(ConcreteDatatype::Null);
+            ColumnSchema::new("stream".to_string(), name.clone(), datatype)
+        })
+        .collect();
+    let schema = Schema::new(schema_columns);
+    global_catalog().upsert("stream".to_string(), schema);
 }

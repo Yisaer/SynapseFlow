@@ -1,7 +1,7 @@
 //! Decoder abstractions for turning raw bytes into RecordBatch collections.
 
 use crate::model::{CollectionError, Message, RecordBatch, Tuple};
-use datatypes::{ConcreteDatatype, ListValue, StructField, StructType, StructValue, Value};
+use datatypes::{ConcreteDatatype, ListValue, Schema, StructField, StructType, StructValue, Value};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::sync::Arc;
 
@@ -34,12 +34,21 @@ pub trait RecordDecoder: Send + Sync + 'static {
 /// Decoder that converts JSON documents (object or array) into a RecordBatch.
 pub struct JsonDecoder {
     source_name: String,
+    schema: Arc<Schema>,
+    schema_keys: Vec<Arc<str>>,
 }
 
 impl JsonDecoder {
-    pub fn new(source_name: impl Into<String>) -> Self {
+    pub fn new(source_name: impl Into<String>, schema: Arc<Schema>) -> Self {
+        let schema_keys = schema
+            .column_schemas()
+            .iter()
+            .map(|col| Arc::<str>::from(col.name.as_str()))
+            .collect();
         Self {
             source_name: source_name.into(),
+            schema,
+            schema_keys,
         }
     }
 
@@ -136,14 +145,26 @@ impl JsonDecoder {
         rows: Vec<JsonMap<String, JsonValue>>,
     ) -> Result<Vec<Tuple>, CodecError> {
         let mut tuples = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut keys = Vec::with_capacity(row.len());
-            let mut values = Vec::with_capacity(row.len());
+        for mut row in rows {
+            let mut keys = Vec::with_capacity(self.schema_keys.len() + row.len());
+            let mut values = Vec::with_capacity(keys.capacity());
+            for (idx, column) in self.schema.column_schemas().iter().enumerate() {
+                let value = row
+                    .remove(&column.name)
+                    .map(|json| json_to_value(&json))
+                    .unwrap_or(Value::Null);
+                keys.push(self.schema_keys[idx].clone());
+                values.push(value);
+            }
             for (key, value) in row {
-                keys.push(key);
+                keys.push(Arc::<str>::from(key.as_str()));
                 values.push(json_to_value(&value));
             }
-            let message = Arc::new(Message::new(Arc::<str>::from(self.source_name.as_str()), keys, values));
+            let message = Arc::new(Message::new(
+                Arc::<str>::from(self.source_name.as_str()),
+                keys,
+                values,
+            ));
             tuples.push(Tuple::new(vec![message]));
         }
         Ok(tuples)
@@ -206,11 +227,23 @@ fn json_to_value(value: &JsonValue) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datatypes::Value;
+    use datatypes::{ColumnSchema, ConcreteDatatype, Int64Type, Schema, StringType, Value};
 
     #[test]
     fn json_decoder_decodes_single_tuple() {
-        let decoder = JsonDecoder::new("orders");
+        let schema = Arc::new(Schema::new(vec![
+            ColumnSchema::new(
+                "orders".to_string(),
+                "amount".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+            ColumnSchema::new(
+                "orders".to_string(),
+                "status".to_string(),
+                ConcreteDatatype::String(StringType),
+            ),
+        ]));
+        let decoder = JsonDecoder::new("orders", schema);
         let payload = br#"{"amount":10,"status":"ok"}"#.as_ref();
         let tuple = decoder.decode_tuple(payload).expect("decode tuple");
 
@@ -239,7 +272,12 @@ mod tests {
 
     #[test]
     fn json_decoder_rejects_multiple_rows_for_tuple() {
-        let decoder = JsonDecoder::new("orders");
+        let schema = Arc::new(Schema::new(vec![ColumnSchema::new(
+            "orders".to_string(),
+            "amount".to_string(),
+            ConcreteDatatype::Int64(Int64Type),
+        )]));
+        let decoder = JsonDecoder::new("orders", schema);
         let payload = br#"[{"amount":10},{"amount":20}]"#.as_ref();
         let err = decoder
             .decode_tuple(payload)

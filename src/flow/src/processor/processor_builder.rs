@@ -7,8 +7,8 @@ use crate::codec::encoder::JsonEncoder;
 use crate::connector::MockSinkConnector;
 use crate::planner::physical::{PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject};
 use crate::processor::{
-    ControlSourceProcessor, DataSourceProcessor, FilterProcessor, Processor, ProcessorError,
-    ProjectProcessor, ResultCollectProcessor, SinkProcessor, StreamData,
+    ControlSignal, ControlSourceProcessor, DataSourceProcessor, FilterProcessor, Processor,
+    ProcessorError, ProjectProcessor, ResultCollectProcessor, SinkProcessor, StreamData,
 };
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -145,6 +145,14 @@ impl ProcessorPipeline {
         }
     }
 
+    /// Broadcast a control signal into the pipeline, respecting its channel target.
+    pub fn broadcast_control_signal(&self, signal: ControlSignal) -> Result<(), ProcessorError> {
+        self.control_input_sender
+            .send(StreamData::control(signal))
+            .map(|_| ())
+            .map_err(|_| ProcessorError::ChannelClosed)
+    }
+
     /// Close the pipeline gracefully using the data path.
     pub async fn close(&mut self) -> Result<(), ProcessorError> {
         self.graceful_close().await
@@ -156,9 +164,9 @@ impl ProcessorPipeline {
         self.await_all_handles().await
     }
 
-    /// Quickly close the pipeline by delivering StreamEnd to the control channel.
+    /// Quickly close the pipeline by delivering StreamQuickEnd to the control channel.
     pub async fn quick_close(&mut self) -> Result<(), ProcessorError> {
-        self.send_stream_end_via_control()?;
+        self.broadcast_control_signal(ControlSignal::StreamQuickEnd)?;
         self.replace_input_sender();
         self.await_all_handles().await
     }
@@ -170,13 +178,6 @@ impl ProcessorPipeline {
             .map_err(|_| ProcessorError::ChannelClosed)?;
         self.replace_input_sender();
         Ok(())
-    }
-
-    fn send_stream_end_via_control(&self) -> Result<(), ProcessorError> {
-        self.control_input_sender
-            .send(StreamData::stream_end())
-            .map(|_| ())
-            .map_err(|_| ProcessorError::ChannelClosed)
     }
 
     fn replace_input_sender(&mut self) {
@@ -245,7 +246,7 @@ pub fn create_processor_from_plan_node(
 ) -> Result<PlanProcessor, ProcessorError> {
     if let Some(ds) = plan.as_any().downcast_ref::<PhysicalDataSource>() {
         let processor_id = ds.source_name();
-        let processor = DataSourceProcessor::new(processor_id);
+        let processor = DataSourceProcessor::new(processor_id, ds.schema());
         Ok(PlanProcessor::DataSource(processor))
     } else if let Some(proj) = plan.as_any().downcast_ref::<PhysicalProject>() {
         let processor_id = format!("project_{}", _idx);
@@ -524,15 +525,17 @@ mod tests {
     use super::*;
     use crate::expr::ScalarExpr;
     use crate::planner::physical::{PhysicalDataSource, PhysicalProject, PhysicalProjectField};
-    use datatypes::{ConcreteDatatype, Value};
+    use datatypes::{ConcreteDatatype, Schema, Value};
     use sqlparser::ast::{Expr, Value as SqlValue};
     use std::sync::Arc;
 
     #[test]
     fn test_create_processor_from_physical_project() {
         // Create a simple data source
-        let data_source: Arc<dyn crate::planner::physical::PhysicalPlan> =
-            Arc::new(PhysicalDataSource::new("test_source".to_string(), 0));
+        let schema = Arc::new(Schema::new(vec![]));
+        let data_source: Arc<dyn crate::planner::physical::PhysicalPlan> = Arc::new(
+            PhysicalDataSource::new("test_source".to_string(), None, schema, 0),
+        );
 
         // Create a projection field
         let project_field = PhysicalProjectField::new(
