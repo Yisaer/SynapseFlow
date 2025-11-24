@@ -33,11 +33,12 @@ jobs:
           BIN_PATH="target/release/synapse-flow"
           ASSET_NAME="synapse-flow-${{ matrix.asset_suffix }}"
           cp "$BIN_PATH" "$ASSET_NAME"
-          chmod +x "$ASSET_NAME"
+          tar -czf "${ASSET_NAME}.tar.gz" "$ASSET_NAME"
+          rm "$ASSET_NAME"
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: synapse-flow-${{ matrix.asset_suffix }}
+          files: synapse-flow-${{ matrix.asset_suffix }}.tar.gz
