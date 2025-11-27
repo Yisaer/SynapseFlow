@@ -23,7 +23,9 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 /// - Reads data from the source when triggered by control signals
 /// - Sends data downstream as StreamData::Collection
 pub struct DataSourceProcessor {
-    /// Processor identifier
+    /// Processor identifier (`datasource_{plan_index}` for plan-based processors)
+    id: String,
+    plan_index: Option<i64>,
     source_name: String,
     schema: Arc<Schema>,
     /// Input channels for receiving control signals
@@ -142,10 +144,26 @@ impl ConnectorBinding {
 }
 impl DataSourceProcessor {
     /// Create a new DataSourceProcessor from PhysicalDatasource
-    pub fn new(source_name: impl Into<String>, schema: Arc<Schema>) -> Self {
+    pub fn new(plan_index: i64, source_name: impl Into<String>, schema: Arc<Schema>) -> Self {
+        Self::with_custom_id(
+            Some(plan_index),
+            format!("datasource_{plan_index}"),
+            source_name,
+            schema,
+        )
+    }
+
+    pub fn with_custom_id(
+        plan_index: Option<i64>,
+        id: impl Into<String>,
+        source_name: impl Into<String>,
+        schema: Arc<Schema>,
+    ) -> Self {
         let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         Self {
+            id: id.into(),
+            plan_index,
             source_name: source_name.into(),
             schema,
             inputs: Vec::new(),
@@ -191,13 +209,20 @@ impl DataSourceProcessor {
 
 impl Processor for DataSourceProcessor {
     fn id(&self) -> &str {
-        &self.source_name
+        &self.id
     }
 
     fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
-        let processor_id = self.source_name.clone();
+        let processor_id = self.id.clone();
+        let plan_label = self
+            .plan_index
+            .map(|idx| idx.to_string())
+            .unwrap_or_else(|| "global".to_string());
+        let source_name = self.source_name.clone();
+        let log_prefix =
+            format!("[DataSourceProcessor:{processor_id}#{plan_label}::{source_name}]");
         let mut base_inputs = std::mem::take(&mut self.inputs);
         let mut connectors = std::mem::take(&mut self.connectors);
         let connector_inputs = Self::activate_connectors(&mut connectors, &processor_id);
@@ -206,7 +231,7 @@ impl Processor for DataSourceProcessor {
         let control_receivers = std::mem::take(&mut self.control_inputs);
         let mut control_streams = fan_in_streams(control_receivers);
         let mut control_active = !control_streams.is_empty();
-        println!("[DataSourceProcessor:{processor_id}] starting");
+        println!("{log_prefix} starting");
         tokio::spawn(async move {
             let mut connectors = connectors;
             loop {
@@ -222,19 +247,16 @@ impl Processor for DataSourceProcessor {
                                         skipped
                                     ));
                                     Self::shutdown_connectors(&mut connectors).await?;
-                                    println!(
-                                        "[DataSourceProcessor:{processor_id}] stopped with error: {}",
-                                        err
-                                    );
+                                    println!("{log_prefix} stopped with error: {}", err);
                                     return Err(err);
                                 }
                             };
                             let is_terminal = control_data.is_terminal();
                             let _ = control_output.send(control_data);
                             if is_terminal {
-                                println!("[DataSourceProcessor:{}] received StreamEnd (control)", processor_id);
+                                println!("{log_prefix} received StreamEnd (control)");
                                 Self::shutdown_connectors(&mut connectors).await?;
-                                println!("[DataSourceProcessor:{processor_id}] stopped");
+                                println!("{log_prefix} stopped");
                                 return Ok(());
                             }
                             continue;
@@ -261,9 +283,9 @@ impl Processor for DataSourceProcessor {
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
 
                                 if is_terminal {
-                                    println!("[DataSourceProcessor:{}] received StreamEnd (data)", processor_id);
+                                    println!("{log_prefix} received StreamEnd (data)");
                                     Self::shutdown_connectors(&mut connectors).await?;
-                                    println!("[DataSourceProcessor:{processor_id}] stopped");
+                                    println!("{log_prefix} stopped");
                                     return Ok(());
                                 }
                             }
@@ -273,15 +295,12 @@ impl Processor for DataSourceProcessor {
                                     skipped
                                 ));
                                 Self::shutdown_connectors(&mut connectors).await?;
-                                println!(
-                                    "[DataSourceProcessor:{processor_id}] stopped with error: {}",
-                                    err
-                                );
+                                println!("{log_prefix} stopped with error: {}", err);
                                 return Err(err);
                             }
                             None => {
                                 Self::shutdown_connectors(&mut connectors).await?;
-                                println!("[DataSourceProcessor:{processor_id}] stopped");
+                                println!("{log_prefix} stopped");
                                 return Ok(());
                             }
                         }

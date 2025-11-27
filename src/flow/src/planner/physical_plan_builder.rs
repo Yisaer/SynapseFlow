@@ -1,14 +1,16 @@
 //! Physical plan builder - converts logical plans to physical plans
 
 use crate::expr::sql_conversion::{
-    convert_expr_to_scalar_with_bindings, SchemaBinding, SchemaBindingEntry,
+    convert_expr_to_scalar_with_bindings, SchemaBinding, SchemaBindingEntry, SourceBindingKind,
 };
 use crate::planner::logical::{
     DataSource as LogicalDataSource, Filter as LogicalFilter, LogicalPlan,
     Project as LogicalProject,
 };
 use crate::planner::physical::physical_project::PhysicalProjectField;
-use crate::planner::physical::{PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject};
+use crate::planner::physical::{
+    PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject, PhysicalSharedStream,
+};
 use std::sync::Arc;
 
 /// Create a physical plan from a logical plan
@@ -52,13 +54,27 @@ fn create_physical_data_source(
     bindings: &SchemaBinding,
 ) -> Result<Arc<dyn PhysicalPlan>, String> {
     let entry = find_binding_entry(logical_ds, bindings)?;
-    let physical_ds = PhysicalDataSource::new(
-        logical_ds.source_name.clone(),
-        logical_ds.alias.clone(),
-        entry.schema.clone(),
-        index,
-    );
-    Ok(Arc::new(physical_ds))
+    let schema = entry.schema.clone();
+    match entry.kind {
+        SourceBindingKind::Regular => {
+            let physical_ds = PhysicalDataSource::new(
+                logical_ds.source_name.clone(),
+                logical_ds.alias.clone(),
+                schema,
+                index,
+            );
+            Ok(Arc::new(physical_ds))
+        }
+        SourceBindingKind::Shared => {
+            let physical_shared = PhysicalSharedStream::new(
+                logical_ds.source_name.clone(),
+                logical_ds.alias.clone(),
+                schema,
+                index,
+            );
+            Ok(Arc::new(physical_shared))
+        }
+    }
 }
 
 /// Create a PhysicalFilter from a LogicalFilter

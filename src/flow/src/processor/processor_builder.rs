@@ -5,14 +5,18 @@
 
 use crate::codec::encoder::JsonEncoder;
 use crate::connector::MockSinkConnector;
-use crate::planner::physical::{PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject};
+use crate::planner::physical::{
+    PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject, PhysicalSharedStream,
+};
 use crate::processor::{
     ControlSignal, ControlSourceProcessor, DataSourceProcessor, FilterProcessor, Processor,
-    ProcessorError, ProjectProcessor, ResultCollectProcessor, SinkProcessor, StreamData,
+    ProcessorError, ProjectProcessor, ResultCollectProcessor, SharedStreamProcessor, SinkProcessor,
+    StreamData,
 };
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 /// Enum for all processor types created from PhysicalPlan
 ///
@@ -21,6 +25,8 @@ use tokio::task::JoinHandle;
 pub enum PlanProcessor {
     /// DataSourceProcessor created from PhysicalDatasource
     DataSource(DataSourceProcessor),
+    /// SharedStreamProcessor created from PhysicalSharedStream
+    SharedSource(SharedStreamProcessor),
     /// ProjectProcessor created from PhysicalProject
     Project(ProjectProcessor),
     /// FilterProcessor created from PhysicalFilter
@@ -32,8 +38,15 @@ impl PlanProcessor {
     pub fn id(&self) -> &str {
         match self {
             PlanProcessor::DataSource(p) => p.id(),
+            PlanProcessor::SharedSource(p) => p.id(),
             PlanProcessor::Project(p) => p.id(),
             PlanProcessor::Filter(p) => p.id(),
+        }
+    }
+
+    pub fn set_pipeline_id(&mut self, pipeline_id: &str) {
+        if let PlanProcessor::SharedSource(proc) = self {
+            proc.set_pipeline_id(pipeline_id);
         }
     }
 
@@ -41,6 +54,7 @@ impl PlanProcessor {
     pub fn start(&mut self) -> tokio::task::JoinHandle<Result<(), ProcessorError>> {
         match self {
             PlanProcessor::DataSource(p) => p.start(),
+            PlanProcessor::SharedSource(p) => p.start(),
             PlanProcessor::Project(p) => p.start(),
             PlanProcessor::Filter(p) => p.start(),
         }
@@ -50,6 +64,7 @@ impl PlanProcessor {
     pub fn subscribe_output(&self) -> Option<broadcast::Receiver<crate::processor::StreamData>> {
         match self {
             PlanProcessor::DataSource(p) => p.subscribe_output(),
+            PlanProcessor::SharedSource(p) => p.subscribe_output(),
             PlanProcessor::Project(p) => p.subscribe_output(),
             PlanProcessor::Filter(p) => p.subscribe_output(),
         }
@@ -61,6 +76,7 @@ impl PlanProcessor {
     ) -> Option<broadcast::Receiver<crate::processor::StreamData>> {
         match self {
             PlanProcessor::DataSource(p) => p.subscribe_control_output(),
+            PlanProcessor::SharedSource(p) => p.subscribe_control_output(),
             PlanProcessor::Project(p) => p.subscribe_control_output(),
             PlanProcessor::Filter(p) => p.subscribe_control_output(),
         }
@@ -70,6 +86,7 @@ impl PlanProcessor {
     pub fn add_input(&mut self, receiver: broadcast::Receiver<crate::processor::StreamData>) {
         match self {
             PlanProcessor::DataSource(p) => p.add_input(receiver),
+            PlanProcessor::SharedSource(p) => p.add_input(receiver),
             PlanProcessor::Project(p) => p.add_input(receiver),
             PlanProcessor::Filter(p) => p.add_input(receiver),
         }
@@ -82,6 +99,7 @@ impl PlanProcessor {
     ) {
         match self {
             PlanProcessor::DataSource(p) => p.add_control_input(receiver),
+            PlanProcessor::SharedSource(p) => p.add_control_input(receiver),
             PlanProcessor::Project(p) => p.add_control_input(receiver),
             PlanProcessor::Filter(p) => p.add_control_input(receiver),
         }
@@ -113,6 +131,8 @@ pub struct ProcessorPipeline {
     control_input_buffer: Option<mpsc::Receiver<StreamData>>,
     /// Join handles for all running processors
     handles: Vec<JoinHandle<Result<(), ProcessorError>>>,
+    /// Logical pipeline identifier used for diagnostics/subscriptions
+    pipeline_id: String,
 }
 
 impl ProcessorPipeline {
@@ -151,6 +171,18 @@ impl ProcessorPipeline {
             .send(StreamData::control(signal))
             .map(|_| ())
             .map_err(|_| ProcessorError::ChannelClosed)
+    }
+
+    pub fn set_pipeline_id(&mut self, id: impl Into<String>) {
+        let id = id.into();
+        self.pipeline_id = id.clone();
+        for processor in &mut self.middle_processors {
+            processor.set_pipeline_id(&id);
+        }
+    }
+
+    pub fn pipeline_id(&self) -> &str {
+        &self.pipeline_id
     }
 
     /// Close the pipeline gracefully using the data path.
@@ -242,18 +274,21 @@ impl ProcessorPipeline {
 /// A PlanProcessor enum variant corresponding to the plan type
 pub fn create_processor_from_plan_node(
     plan: &Arc<dyn PhysicalPlan>,
-    _idx: usize,
 ) -> Result<PlanProcessor, ProcessorError> {
+    let plan_index = *plan.get_plan_index();
     if let Some(ds) = plan.as_any().downcast_ref::<PhysicalDataSource>() {
-        let processor_id = ds.source_name();
-        let processor = DataSourceProcessor::new(processor_id, ds.schema());
+        let processor =
+            DataSourceProcessor::new(plan_index, ds.source_name().to_string(), ds.schema());
         Ok(PlanProcessor::DataSource(processor))
+    } else if let Some(shared) = plan.as_any().downcast_ref::<PhysicalSharedStream>() {
+        let processor = SharedStreamProcessor::new(plan_index, shared.stream_name().to_string());
+        Ok(PlanProcessor::SharedSource(processor))
     } else if let Some(proj) = plan.as_any().downcast_ref::<PhysicalProject>() {
-        let processor_id = format!("project_{}", _idx);
+        let processor_id = format!("project_{}", plan_index);
         let processor = ProjectProcessor::new(processor_id, Arc::new(proj.clone()));
         Ok(PlanProcessor::Project(processor))
     } else if let Some(filter) = plan.as_any().downcast_ref::<PhysicalFilter>() {
-        let processor_id = format!("filter_{}", _idx);
+        let processor_id = format!("filter_{}", plan_index);
         let processor = FilterProcessor::new(processor_id, Arc::new(filter.clone()));
         Ok(PlanProcessor::Filter(processor))
     } else {
@@ -268,15 +303,12 @@ pub fn create_processor_from_plan_node(
 struct ProcessorMap {
     /// Map from plan index to processor
     processors: std::collections::HashMap<i64, PlanProcessor>,
-    /// Counter for generating unique processor IDs
-    processor_counter: usize,
 }
 
 impl ProcessorMap {
     fn new() -> Self {
         Self {
             processors: std::collections::HashMap::new(),
-            processor_counter: 0,
         }
     }
 
@@ -310,8 +342,7 @@ fn build_processors_recursive(
     let plan_index = *plan.get_plan_index();
 
     // Create processor for current node
-    let processor = create_processor_from_plan_node(&plan, processor_map.processor_counter)?;
-    processor_map.processor_counter += 1;
+    let processor = create_processor_from_plan_node(&plan)?;
     processor_map.insert_processor(plan_index, processor);
 
     // Recursively process children
@@ -489,7 +520,11 @@ pub fn create_processor_pipeline(
         pipeline_output_receiver = Some(pipeline_output_rx);
     }
 
-    let middle_processors = processor_map.get_all_processors();
+    let mut middle_processors = processor_map.get_all_processors();
+    let pipeline_id = Uuid::new_v4().to_string();
+    for processor in &mut middle_processors {
+        processor.set_pipeline_id(&pipeline_id);
+    }
 
     Ok(ProcessorPipeline {
         input: pipeline_input_sender,
@@ -501,6 +536,7 @@ pub fn create_processor_pipeline(
         control_input_sender,
         control_input_buffer: Some(pipeline_input_receiver),
         handles: Vec::new(),
+        pipeline_id,
     })
 }
 
@@ -553,7 +589,7 @@ mod tests {
         );
 
         // Try to create a processor from the PhysicalProject
-        let result = create_processor_from_plan_node(&physical_project, 0);
+        let result = create_processor_from_plan_node(&physical_project);
 
         assert!(
             result.is_ok(),
@@ -562,7 +598,7 @@ mod tests {
 
         match result {
             Ok(processor) => {
-                assert_eq!(processor.id(), "project_0");
+                assert_eq!(processor.id(), "project_1");
                 println!(
                     "✅ SUCCESS: PhysicalProject processor created with ID: {}",
                     processor.id()

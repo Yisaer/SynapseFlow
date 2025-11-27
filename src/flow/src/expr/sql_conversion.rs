@@ -19,6 +19,13 @@ pub struct SchemaBindingEntry {
     pub source_name: String,
     pub alias: Option<String>,
     pub schema: Arc<Schema>,
+    pub kind: SourceBindingKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceBindingKind {
+    Regular,
+    Shared,
 }
 
 impl SchemaBinding {
@@ -49,6 +56,10 @@ impl SchemaBindingEntry {
                 .as_ref()
                 .map(|alias| alias == qualifier)
                 .unwrap_or(false)
+    }
+
+    pub fn is_shared(&self) -> bool {
+        matches!(self.kind, SourceBindingKind::Shared)
     }
 }
 

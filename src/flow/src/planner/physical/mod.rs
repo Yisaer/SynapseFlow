@@ -6,11 +6,13 @@ pub mod base_physical;
 pub mod physical_data_source;
 pub mod physical_filter;
 pub mod physical_project;
+pub mod physical_shared_stream;
 
 pub use base_physical::BasePhysicalPlan;
 pub use physical_data_source::PhysicalDataSource;
 pub use physical_filter::PhysicalFilter;
 pub use physical_project::{PhysicalProject, PhysicalProjectField};
+pub use physical_shared_stream::PhysicalSharedStream;
 
 /// Core trait for all physical operators in the stream processing engine
 ///

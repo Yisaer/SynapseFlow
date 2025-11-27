@@ -34,7 +34,7 @@ use tokio::time::{sleep, Duration};
 
 const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9898";
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 5;
-const DEFAULT_PROFILE_ADDR: &str = "0.0.0.0:8080";
+const DEFAULT_PROFILE_ADDR: &str = "0.0.0.0:6060";
 
 #[derive(Debug, Clone, Copy)]
 struct CliFlags {

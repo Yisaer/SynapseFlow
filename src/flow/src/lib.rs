@@ -5,6 +5,7 @@ pub mod expr;
 pub mod model;
 pub mod planner;
 pub mod processor;
+pub mod shared_stream;
 
 pub use catalog::{global_catalog, Catalog, CatalogError};
 pub use codec::{
@@ -27,6 +28,10 @@ pub use processor::{
     ControlSignal, ControlSourceProcessor, DataSourceProcessor, Processor, ProcessorError,
     ResultCollectProcessor, SinkProcessor, StreamData,
 };
+pub use shared_stream::{
+    registry as shared_stream_registry, SharedSourceConnectorConfig, SharedStreamConfig,
+    SharedStreamError, SharedStreamInfo, SharedStreamStatus, SharedStreamSubscription,
+};
 
 use planner::logical::create_logical_plan;
 use processor::{
@@ -47,17 +52,24 @@ fn build_physical_plan_from_sql(
 fn build_schema_binding(
     select_stmt: &parser::SelectStmt,
 ) -> Result<crate::expr::sql_conversion::SchemaBinding, Box<dyn std::error::Error>> {
-    use crate::expr::sql_conversion::{SchemaBinding, SchemaBindingEntry};
+    use crate::expr::sql_conversion::{SchemaBinding, SchemaBindingEntry, SourceBindingKind};
     let catalog = catalog::global_catalog();
+    let registry = shared_stream_registry();
     let mut entries = Vec::new();
     for source in &select_stmt.source_infos {
         let schema = catalog
             .get(&source.name)
             .ok_or_else(|| format!("schema for source '{}' not found", source.name))?;
+        let kind = if futures::executor::block_on(registry.is_registered(&source.name)) {
+            SourceBindingKind::Shared
+        } else {
+            SourceBindingKind::Regular
+        };
         entries.push(SchemaBindingEntry {
             source_name: source.name.clone(),
             alias: source.alias.clone(),
             schema,
+            kind,
         });
     }
     Ok(SchemaBinding::new(entries))
