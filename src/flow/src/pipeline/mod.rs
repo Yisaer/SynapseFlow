@@ -280,9 +280,7 @@ fn build_sinks_from_definition(
     for sink in definition.sinks() {
         match sink.sink_type {
             SinkType::Mqtt => {
-                let props = match &sink.props {
-                    SinkProps::Mqtt(cfg) => cfg,
-                };
+                let SinkProps::Mqtt(props) = &sink.props;
                 let mut config = MqttSinkConfig::new(
                     sink.sink_id.clone(),
                     props.broker_url.clone(),
@@ -325,9 +323,7 @@ fn attach_sources_from_catalog(
             let definition = stream_defs.get(&stream_name).ok_or_else(|| {
                 format!("stream {stream_name} missing definition when attaching sources")
             })?;
-            let stream_props = match definition.props() {
-                StreamProps::Mqtt(props) => props,
-            };
+            let StreamProps::Mqtt(stream_props) = definition.props();
             let processor_id = ds.id().to_string();
             let schema = ds.schema();
 

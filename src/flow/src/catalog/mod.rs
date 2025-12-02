@@ -27,7 +27,7 @@ pub enum StreamType {
 }
 
 /// Properties for MQTT-backed streams.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MqttStreamProps {
     pub broker_url: String,
     pub topic: String,
@@ -55,18 +55,6 @@ impl MqttStreamProps {
     pub fn with_connector_key(mut self, key: impl Into<String>) -> Self {
         self.connector_key = Some(key.into());
         self
-    }
-}
-
-impl Default for MqttStreamProps {
-    fn default() -> Self {
-        Self {
-            broker_url: String::new(),
-            topic: String::new(),
-            qos: 0,
-            client_id: None,
-            connector_key: None,
-        }
     }
 }
 
