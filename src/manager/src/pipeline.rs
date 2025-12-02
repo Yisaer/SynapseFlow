@@ -1,44 +1,27 @@
-use crate::{DEFAULT_BROKER_URL, MQTT_QOS, SINK_TOPIC, SOURCE_TOPIC};
+use crate::{DEFAULT_BROKER_URL, MQTT_QOS, SINK_TOPIC};
 use axum::{
     Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use flow::connector::{MqttSinkConfig, MqttSourceConfig, MqttSourceConnector};
-use flow::processor::Processor;
-use flow::processor::processor_builder::{PlanProcessor, ProcessorPipeline};
-use flow::{
-    JsonDecoder, NopSinkConfig, PipelineSink, PipelineSinkConnector, SinkConnectorConfig,
-    SinkEncoderConfig, create_pipeline,
+use flow::pipeline::{
+    MqttSinkProps, PipelineDefinition, PipelineError, PipelineManager, PipelineStatus,
+    SinkDefinition, SinkProps, SinkType,
 };
-use parser::parse_sql;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::sync::Arc;
-use tokio::sync::Mutex;
-
-#[derive(Clone, Debug, Serialize)]
-pub enum PipelineStatus {
-    Created,
-    Running,
-}
-
-pub struct PipelineEntry {
-    pub pipeline: ProcessorPipeline,
-    pub status: PipelineStatus,
-    pub streams: Vec<String>,
-}
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pipelines: Arc<Mutex<HashMap<String, PipelineEntry>>>,
+    pub pipeline_manager: Arc<PipelineManager>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
-            pipelines: Arc::new(Mutex::new(HashMap::new())),
+            pipeline_manager: Arc::new(PipelineManager::new()),
         }
     }
 }
@@ -48,221 +31,196 @@ pub struct CreatePipelineRequest {
     pub id: String,
     pub sql: String,
     #[serde(default)]
-    pub sinks: Option<Vec<String>>,
-    #[serde(default)]
-    pub source_broker: Option<String>,
-    #[serde(default)]
-    pub source_topic: Option<String>,
-    #[serde(default)]
-    pub sink_topic: Option<String>,
-    #[serde(default)]
-    pub qos: Option<u8>,
+    pub sinks: Vec<CreatePipelineSinkRequest>,
 }
 
 #[derive(Serialize)]
 pub struct CreatePipelineResponse {
     pub id: String,
-    pub status: PipelineStatus,
+    pub status: String,
 }
 
 #[derive(Serialize)]
 pub struct ListPipelineItem {
     pub id: String,
-    pub status: PipelineStatus,
+    pub status: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct CreatePipelineSinkRequest {
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub sink_type: String,
+    #[serde(default)]
+    pub props: SinkPropsRequest,
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct SinkPropsRequest {
+    #[serde(flatten)]
+    fields: JsonMap<String, JsonValue>,
+}
+
+impl SinkPropsRequest {
+    fn to_value(&self) -> JsonValue {
+        JsonValue::Object(self.fields.clone())
+    }
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct MqttSinkPropsRequest {
+    pub broker_url: Option<String>,
+    pub topic: Option<String>,
+    pub qos: Option<u8>,
+    pub retain: Option<bool>,
+    pub client_id: Option<String>,
+    pub connector_key: Option<String>,
 }
 
 pub async fn create_pipeline_handler(
     State(state): State<AppState>,
     Json(req): Json<CreatePipelineRequest>,
 ) -> impl IntoResponse {
-    let mut pipelines = state.pipelines.lock().await;
-    if pipelines.contains_key(&req.id) {
-        return (
+    if let Err(err) = validate_create_request(&req) {
+        return (StatusCode::BAD_REQUEST, err).into_response();
+    }
+    let definition = match build_pipeline_definition(&req) {
+        Ok(def) => def,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
+    match state.pipeline_manager.create_pipeline(definition) {
+        Ok(snapshot) => {
+            println!("[manager] pipeline {} created", snapshot.definition.id());
+            (
+                StatusCode::CREATED,
+                Json(CreatePipelineResponse {
+                    id: snapshot.definition.id().to_string(),
+                    status: status_label(snapshot.status),
+                }),
+            )
+                .into_response()
+        }
+        Err(PipelineError::AlreadyExists(_)) => (
             StatusCode::CONFLICT,
             format!("pipeline {} already exists", req.id),
         )
-            .into_response();
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            format!("failed to create pipeline {}: {err}", req.id),
+        )
+            .into_response(),
     }
-
-    let (pipeline, streams) = match build_pipeline(&req) {
-        Ok(p) => p,
-        Err(err) => {
-            println!("[manager] failed to create pipeline {}: {}", req.id, err);
-            return (StatusCode::BAD_REQUEST, err).into_response();
-        }
-    };
-
-    pipelines.insert(
-        req.id.clone(),
-        PipelineEntry {
-            pipeline,
-            status: PipelineStatus::Created,
-            streams,
-        },
-    );
-    println!("[manager] pipeline {} created", req.id);
-
-    (
-        StatusCode::CREATED,
-        Json(CreatePipelineResponse {
-            id: req.id,
-            status: PipelineStatus::Created,
-        }),
-    )
-        .into_response()
 }
 
 pub async fn start_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut pipelines = state.pipelines.lock().await;
-    let entry = match pipelines.get_mut(&id) {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, format!("pipeline {id} not found")).into_response(),
-    };
-
-    if let PipelineStatus::Running = entry.status {
-        println!("[manager] pipeline {} already running", id);
-        return (StatusCode::OK, format!("pipeline {id} already running")).into_response();
+    match state.pipeline_manager.start_pipeline(&id) {
+        Ok(_) => {
+            println!("[manager] pipeline {} started", id);
+            (StatusCode::OK, format!("pipeline {id} started")).into_response()
+        }
+        Err(PipelineError::NotFound(_)) => {
+            (StatusCode::NOT_FOUND, format!("pipeline {id} not found")).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            format!("failed to start pipeline {id}: {err}"),
+        )
+            .into_response(),
     }
-
-    entry.pipeline.start();
-    entry.status = PipelineStatus::Running;
-    println!("[manager] pipeline {} started", id);
-    (StatusCode::OK, format!("pipeline {id} started")).into_response()
 }
 
 pub async fn delete_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut pipelines = state.pipelines.lock().await;
-    let Some(mut entry) = pipelines.remove(&id) else {
-        return (StatusCode::NOT_FOUND, format!("pipeline {id} not found")).into_response();
-    };
-
-    match entry.status {
-        PipelineStatus::Running => {
-            if let Err(err) = entry.pipeline.quick_close().await {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to stop pipeline {id}: {err}"),
-                )
-                    .into_response();
-            }
-            println!("[manager] pipeline {id} quick close completed");
+    match state.pipeline_manager.delete_pipeline(&id).await {
+        Ok(_) => (StatusCode::OK, format!("pipeline {id} deleted")).into_response(),
+        Err(PipelineError::NotFound(_)) => {
+            (StatusCode::NOT_FOUND, format!("pipeline {id} not found")).into_response()
         }
-        PipelineStatus::Created => {}
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            format!("failed to delete pipeline {id}: {err}"),
+        )
+            .into_response(),
     }
-
-    (StatusCode::OK, format!("pipeline {id} deleted")).into_response()
 }
 
 pub async fn list_pipelines(State(state): State<AppState>) -> impl IntoResponse {
-    let pipelines = state.pipelines.lock().await;
-    let list: Vec<ListPipelineItem> = pipelines
-        .iter()
-        .map(|(id, entry)| ListPipelineItem {
-            id: id.clone(),
-            status: entry.status.clone(),
+    let list = state
+        .pipeline_manager
+        .list()
+        .into_iter()
+        .map(|snapshot| ListPipelineItem {
+            id: snapshot.definition.id().to_string(),
+            status: status_label(snapshot.status),
         })
-        .collect();
+        .collect::<Vec<_>>();
     Json(list)
 }
 
-fn build_pipeline(req: &CreatePipelineRequest) -> Result<(ProcessorPipeline, Vec<String>), String> {
-    let select_stmt = parse_sql(&req.sql).map_err(|err| err.to_string())?;
-    let streams: Vec<String> = select_stmt
-        .source_infos
-        .iter()
-        .map(|info| info.name.clone())
-        .collect();
-    let broker = req.source_broker.as_deref().unwrap_or(DEFAULT_BROKER_URL);
-    let source_topic = req.source_topic.as_deref().unwrap_or(SOURCE_TOPIC);
-    let sink_topic = req.sink_topic.as_deref().unwrap_or(SINK_TOPIC);
-    let qos = req.qos.unwrap_or(MQTT_QOS);
-
-    let sinks = build_sinks(req, broker, sink_topic, qos)?;
-    let mut pipeline = create_pipeline(&req.sql, sinks).map_err(|err| err.to_string())?;
-    attach_mqtt_sources(&mut pipeline, broker, source_topic, qos).map_err(|err| err.to_string())?;
-    pipeline.set_pipeline_id(req.id.clone());
-    Ok((pipeline, streams))
+fn validate_create_request(req: &CreatePipelineRequest) -> Result<(), String> {
+    if req.id.trim().is_empty() {
+        return Err("pipeline id must not be empty".to_string());
+    }
+    if req.sql.trim().is_empty() {
+        return Err("pipeline sql must not be empty".to_string());
+    }
+    if req.sinks.is_empty() {
+        return Err("pipeline must define at least one sink".to_string());
+    }
+    Ok(())
 }
 
-fn build_sinks(
-    req: &CreatePipelineRequest,
-    broker: &str,
-    sink_topic: &str,
-    qos: u8,
-) -> Result<Vec<PipelineSink>, String> {
-    let sink_kinds = req
-        .sinks
-        .clone()
-        .unwrap_or_else(|| vec!["mqtt".to_string()]);
-    let mut sinks = Vec::new();
-    for (idx, kind) in sink_kinds.iter().enumerate() {
-        match kind.as_str() {
+fn build_pipeline_definition(req: &CreatePipelineRequest) -> Result<PipelineDefinition, String> {
+    let mut sinks = Vec::with_capacity(req.sinks.len());
+    for (index, sink_req) in req.sinks.iter().enumerate() {
+        let sink_id = sink_req
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("{}_sink_{index}", req.id));
+        let sink_type = sink_req.sink_type.to_ascii_lowercase();
+        let sink_definition = match sink_type.as_str() {
             "mqtt" => {
-                let sink_id = format!("{}_sink_{idx}", req.id);
-                let connector_id = format!("{}_sink_connector_{idx}", req.id);
-                let config = MqttSinkConfig::new(sink_id.clone(), broker, sink_topic, qos);
-                let connector = PipelineSinkConnector::new(
-                    connector_id,
-                    SinkConnectorConfig::Mqtt(config),
-                    SinkEncoderConfig::Json {
-                        encoder_id: format!("{}_sink_encoder_{idx}", req.id),
-                    },
-                );
-                sinks.push(PipelineSink::new(sink_id, vec![connector]));
+                let mqtt_props: MqttSinkPropsRequest =
+                    serde_json::from_value(sink_req.props.to_value())
+                        .map_err(|err| format!("invalid mqtt sink props: {err}"))?;
+                let broker = mqtt_props
+                    .broker_url
+                    .unwrap_or_else(|| DEFAULT_BROKER_URL.to_string());
+                let topic = mqtt_props.topic.unwrap_or_else(|| SINK_TOPIC.to_string());
+                let qos = mqtt_props.qos.unwrap_or(MQTT_QOS);
+                let retain = mqtt_props.retain.unwrap_or(false);
+
+                let mut props = MqttSinkProps::new(broker, topic, qos).with_retain(retain);
+                if let Some(client_id) = mqtt_props.client_id {
+                    props = props.with_client_id(client_id);
+                }
+                if let Some(connector_key) = mqtt_props.connector_key {
+                    props = props.with_connector_key(connector_key);
+                }
+                SinkDefinition::new(sink_id, SinkType::Mqtt, SinkProps::Mqtt(props))
             }
-            "nop" => {
-                let sink_id = format!("{}_nop_sink_{idx}", req.id);
-                let connector_id = format!("{}_nop_connector_{idx}", req.id);
-                let connector = PipelineSinkConnector::new(
-                    connector_id,
-                    SinkConnectorConfig::Nop(NopSinkConfig),
-                    SinkEncoderConfig::Json {
-                        encoder_id: format!("{}_nop_encoder_{idx}", req.id),
-                    },
-                );
-                sinks.push(PipelineSink::new(sink_id, vec![connector]));
-            }
-            other => return Err(format!("unsupported sink type: {}", other)),
-        }
+            other => return Err(format!("unsupported sink type: {other}")),
+        };
+        sinks.push(sink_definition);
     }
-    Ok(sinks)
+    Ok(PipelineDefinition::new(
+        req.id.clone(),
+        req.sql.clone(),
+        sinks,
+    ))
 }
 
-fn attach_mqtt_sources(
-    pipeline: &mut ProcessorPipeline,
-    broker_url: &str,
-    topic: &str,
-    qos: u8,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut attached = false;
-    for processor in pipeline.middle_processors.iter_mut() {
-        if let PlanProcessor::DataSource(ds) = processor {
-            let processor_id = ds.id().to_string();
-            let stream_name = ds.stream_name().to_string();
-            let schema = ds.schema();
-            let config = MqttSourceConfig::new(
-                processor_id.clone(),
-                broker_url.to_string(),
-                topic.to_string(),
-                qos,
-            );
-            let connector =
-                MqttSourceConnector::new(format!("{processor_id}_source_connector"), config);
-            let decoder = Arc::new(JsonDecoder::new(stream_name, schema));
-            ds.add_connector(Box::new(connector), decoder);
-            attached = true;
-        }
-    }
-
-    if attached {
-        Ok(())
-    } else {
-        Err("no datasource processors available to attach MQTT source".into())
+fn status_label(status: PipelineStatus) -> String {
+    match status {
+        PipelineStatus::Created => "created".to_string(),
+        PipelineStatus::Running => "running".to_string(),
     }
 }

@@ -3,11 +3,15 @@ pub mod codec;
 pub mod connector;
 pub mod expr;
 pub mod model;
+pub mod pipeline;
 pub mod planner;
 pub mod processor;
 pub mod shared_stream;
 
-pub use catalog::{global_catalog, Catalog, CatalogError};
+pub use catalog::{
+    global_catalog, Catalog, CatalogError, MqttStreamProps, StreamDefinition, StreamProps,
+    StreamType,
+};
 pub use codec::{
     CodecError, CollectionEncoder, EncodeError, JsonDecoder, JsonEncoder, RecordDecoder,
 };
@@ -22,6 +26,10 @@ pub use expr::{
     ConcatFunc, ConversionError, EvalContext, ScalarExpr, StreamSqlConverter, UnaryFunc,
 };
 pub use model::{Collection, RecordBatch};
+pub use pipeline::{
+    MqttSinkProps, PipelineDefinition, PipelineError, PipelineManager, PipelineSnapshot,
+    PipelineStatus, SinkDefinition, SinkProps, SinkType,
+};
 pub use planner::create_physical_plan;
 pub use planner::logical::{
     BaseLogicalPlan, DataSinkPlan, DataSource, Filter, LogicalPlan, Project,
@@ -61,9 +69,10 @@ fn build_schema_binding(
     let registry = shared_stream_registry();
     let mut entries = Vec::new();
     for source in &select_stmt.source_infos {
-        let schema = catalog
+        let definition = catalog
             .get(&source.name)
-            .ok_or_else(|| format!("schema for source '{}' not found", source.name))?;
+            .ok_or_else(|| format!("stream '{}' not found in catalog", source.name))?;
+        let schema = definition.schema();
         let kind = if futures::executor::block_on(registry.is_registered(&source.name)) {
             SourceBindingKind::Shared
         } else {

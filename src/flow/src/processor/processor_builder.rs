@@ -139,6 +139,25 @@ impl ProcessorPipeline {
         if !self.handles.is_empty() {
             return;
         }
+        // Start from downstream to upstream so that consumers are ready before producers.
+        if let Some(result_sink) = &mut self.result_sink {
+            self.handles.push(result_sink.start());
+        }
+        for sink in &mut self.sink_processors {
+            self.handles.push(sink.start());
+        }
+        let len = self.middle_processors.len();
+        for idx in (0..len).rev() {
+            if !matches!(self.middle_processors[idx], PlanProcessor::DataSource(_)) {
+                self.handles.push(self.middle_processors[idx].start());
+            }
+        }
+        for idx in (0..len).rev() {
+            if matches!(self.middle_processors[idx], PlanProcessor::DataSource(_)) {
+                self.handles.push(self.middle_processors[idx].start());
+            }
+        }
+        self.handles.push(self.control_source.start());
         if let Some(buffer) = self.data_input_buffer.take() {
             let sender = self.data_input_sender.clone();
             self.handles.push(tokio::spawn(async move {
@@ -150,16 +169,6 @@ impl ProcessorPipeline {
                 }
                 Ok(())
             }));
-        }
-        self.handles.push(self.control_source.start());
-        for processor in &mut self.middle_processors {
-            self.handles.push(processor.start());
-        }
-        for sink in &mut self.sink_processors {
-            self.handles.push(sink.start());
-        }
-        if let Some(result_sink) = &mut self.result_sink {
-            self.handles.push(result_sink.start());
         }
     }
 

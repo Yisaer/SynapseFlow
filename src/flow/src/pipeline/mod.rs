@@ -1,0 +1,430 @@
+use crate::catalog::{global_catalog, StreamDefinition, StreamProps};
+use crate::connector::{MqttSinkConfig, MqttSourceConfig, MqttSourceConnector};
+use crate::processor::processor_builder::{PlanProcessor, ProcessorPipeline};
+use crate::processor::Processor;
+use crate::{
+    create_pipeline, JsonDecoder, PipelineSink, PipelineSinkConnector, SinkConnectorConfig,
+    SinkEncoderConfig,
+};
+use parser::parse_sql;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+const DEFAULT_SINK_TOPIC: &str = "/yisa/data2";
+
+/// Errors that can occur when mutating pipeline definitions.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PipelineError {
+    #[error("pipeline already exists: {0}")]
+    AlreadyExists(String),
+    #[error("pipeline not found: {0}")]
+    NotFound(String),
+    #[error("pipeline build error: {0}")]
+    BuildFailure(String),
+    #[error("pipeline runtime error: {0}")]
+    Runtime(String),
+}
+
+/// Supported sink types for pipeline outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkType {
+    /// MQTT sink.
+    Mqtt,
+}
+
+/// Sink configuration payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SinkProps {
+    /// MQTT sink configuration.
+    Mqtt(MqttSinkProps),
+}
+
+/// Runtime state for pipeline execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStatus {
+    Created,
+    Running,
+}
+
+/// Concrete MQTT sink configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MqttSinkProps {
+    pub broker_url: String,
+    pub topic: String,
+    pub qos: u8,
+    pub retain: bool,
+    pub client_id: Option<String>,
+    pub connector_key: Option<String>,
+}
+
+impl MqttSinkProps {
+    pub fn new(broker_url: impl Into<String>, topic: impl Into<String>, qos: u8) -> Self {
+        Self {
+            broker_url: broker_url.into(),
+            topic: topic.into(),
+            qos,
+            retain: false,
+            client_id: None,
+            connector_key: None,
+        }
+    }
+
+    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = Some(client_id.into());
+        self
+    }
+
+    pub fn with_retain(mut self, retain: bool) -> Self {
+        self.retain = retain;
+        self
+    }
+
+    pub fn with_connector_key(mut self, connector_key: impl Into<String>) -> Self {
+        self.connector_key = Some(connector_key.into());
+        self
+    }
+}
+
+/// Sink definition for a pipeline.
+#[derive(Debug, Clone)]
+pub struct SinkDefinition {
+    pub sink_id: String,
+    pub sink_type: SinkType,
+    pub props: SinkProps,
+}
+
+impl SinkDefinition {
+    pub fn new(sink_id: impl Into<String>, sink_type: SinkType, props: SinkProps) -> Self {
+        Self {
+            sink_id: sink_id.into(),
+            sink_type,
+            props,
+        }
+    }
+}
+
+/// Pipeline definition referencing SQL + sinks.
+#[derive(Debug, Clone)]
+pub struct PipelineDefinition {
+    id: String,
+    sql: String,
+    sinks: Vec<SinkDefinition>,
+}
+
+impl PipelineDefinition {
+    pub fn new(id: impl Into<String>, sql: impl Into<String>, sinks: Vec<SinkDefinition>) -> Self {
+        Self {
+            id: id.into(),
+            sql: sql.into(),
+            sinks,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    pub fn sinks(&self) -> &[SinkDefinition] {
+        &self.sinks
+    }
+}
+
+struct ManagedPipeline {
+    definition: Arc<PipelineDefinition>,
+    pipeline: ProcessorPipeline,
+    streams: Vec<String>,
+    status: PipelineStatus,
+}
+
+impl ManagedPipeline {
+    fn snapshot(&self) -> PipelineSnapshot {
+        PipelineSnapshot {
+            definition: Arc::clone(&self.definition),
+            streams: self.streams.clone(),
+            status: self.status,
+        }
+    }
+}
+
+/// User-facing view of a pipeline entry.
+#[derive(Clone)]
+pub struct PipelineSnapshot {
+    pub definition: Arc<PipelineDefinition>,
+    pub streams: Vec<String>,
+    pub status: PipelineStatus,
+}
+
+/// Stores all registered pipelines and manages their lifecycle.
+#[derive(Default)]
+pub struct PipelineManager {
+    pipelines: RwLock<HashMap<String, ManagedPipeline>>,
+}
+
+impl PipelineManager {
+    pub fn new() -> Self {
+        Self {
+            pipelines: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Create a pipeline runtime from definition and store it.
+    pub fn create_pipeline(
+        &self,
+        definition: PipelineDefinition,
+    ) -> Result<PipelineSnapshot, PipelineError> {
+        let pipeline_id = definition.id().to_string();
+        let (pipeline, streams) =
+            build_pipeline_runtime(&definition).map_err(PipelineError::BuildFailure)?;
+        let mut guard = self.pipelines.write().expect("pipeline manager poisoned");
+        if guard.contains_key(&pipeline_id) {
+            return Err(PipelineError::AlreadyExists(pipeline_id));
+        }
+        let entry = ManagedPipeline {
+            definition: Arc::new(definition),
+            pipeline,
+            streams,
+            status: PipelineStatus::Created,
+        };
+        let snapshot = entry.snapshot();
+        guard.insert(pipeline_id, entry);
+        Ok(snapshot)
+    }
+
+    /// Retrieve a snapshot for a specific pipeline.
+    pub fn get(&self, pipeline_id: &str) -> Option<PipelineSnapshot> {
+        let guard = self.pipelines.read().expect("pipeline manager poisoned");
+        guard.get(pipeline_id).map(|entry| entry.snapshot())
+    }
+
+    /// List all managed pipelines.
+    pub fn list(&self) -> Vec<PipelineSnapshot> {
+        let guard = self.pipelines.read().expect("pipeline manager poisoned");
+        guard.values().map(|entry| entry.snapshot()).collect()
+    }
+
+    /// Start the pipeline runtime if not already running.
+    pub fn start_pipeline(&self, pipeline_id: &str) -> Result<(), PipelineError> {
+        let mut guard = self.pipelines.write().expect("pipeline manager poisoned");
+        let entry = guard
+            .get_mut(pipeline_id)
+            .ok_or_else(|| PipelineError::NotFound(pipeline_id.to_string()))?;
+        if matches!(entry.status, PipelineStatus::Running) {
+            return Ok(());
+        }
+        entry.pipeline.start();
+        entry.status = PipelineStatus::Running;
+        Ok(())
+    }
+
+    /// Remove a pipeline runtime and close it if running.
+    pub async fn delete_pipeline(&self, pipeline_id: &str) -> Result<(), PipelineError> {
+        let maybe_entry = {
+            let mut guard = self.pipelines.write().expect("pipeline manager poisoned");
+            guard.remove(pipeline_id)
+        };
+        let entry = maybe_entry.ok_or_else(|| PipelineError::NotFound(pipeline_id.to_string()))?;
+        if matches!(entry.status, PipelineStatus::Running) {
+            let pipeline_id = entry.definition.id().to_string();
+            tokio::spawn(async move {
+                if let Err(err) = close_pipeline(entry.pipeline).await {
+                    eprintln!(
+                        "[PipelineManager] failed to close pipeline {}: {err}",
+                        pipeline_id
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+async fn close_pipeline(mut pipeline: ProcessorPipeline) -> Result<(), PipelineError> {
+    pipeline
+        .graceful_close()
+        .await
+        .map_err(|err| PipelineError::Runtime(err.to_string()))
+}
+
+fn build_pipeline_runtime(
+    definition: &PipelineDefinition,
+) -> Result<(ProcessorPipeline, Vec<String>), String> {
+    let select_stmt = parse_sql(definition.sql()).map_err(|err| err.to_string())?;
+    let streams: Vec<String> = select_stmt
+        .source_infos
+        .iter()
+        .map(|info| info.name.clone())
+        .collect();
+    let mut stream_definitions = HashMap::new();
+    for stream in &streams {
+        let definition = global_catalog()
+            .get(stream)
+            .ok_or_else(|| format!("stream {stream} not found in catalog"))?;
+        stream_definitions.insert(stream.clone(), definition);
+    }
+
+    let sinks = build_sinks_from_definition(definition)?;
+    let mut pipeline = create_pipeline(definition.sql(), sinks).map_err(|err| err.to_string())?;
+    attach_sources_from_catalog(&mut pipeline, &stream_definitions)?;
+    pipeline.set_pipeline_id(definition.id().to_string());
+    Ok((pipeline, streams))
+}
+
+fn build_sinks_from_definition(
+    definition: &PipelineDefinition,
+) -> Result<Vec<PipelineSink>, String> {
+    let mut sinks = Vec::with_capacity(definition.sinks().len());
+    for sink in definition.sinks() {
+        match sink.sink_type {
+            SinkType::Mqtt => {
+                let SinkProps::Mqtt(props) = &sink.props;
+                let mut config = MqttSinkConfig::new(
+                    sink.sink_id.clone(),
+                    props.broker_url.clone(),
+                    if props.topic.is_empty() {
+                        DEFAULT_SINK_TOPIC.to_string()
+                    } else {
+                        props.topic.clone()
+                    },
+                    props.qos,
+                );
+                config = config.with_retain(props.retain);
+                if let Some(client_id) = &props.client_id {
+                    config = config.with_client_id(client_id.clone());
+                }
+                if let Some(conn_key) = &props.connector_key {
+                    config = config.with_connector_key(conn_key.clone());
+                }
+                let connector = PipelineSinkConnector::new(
+                    sink.sink_id.clone(),
+                    SinkConnectorConfig::Mqtt(config),
+                    SinkEncoderConfig::Json {
+                        encoder_id: format!("{}_sink_encoder", sink.sink_id),
+                    },
+                );
+                sinks.push(PipelineSink::new(sink.sink_id.clone(), vec![connector]));
+            }
+        }
+    }
+    Ok(sinks)
+}
+
+fn attach_sources_from_catalog(
+    pipeline: &mut ProcessorPipeline,
+    stream_defs: &HashMap<String, Arc<StreamDefinition>>,
+) -> Result<(), String> {
+    let mut attached = false;
+    for processor in pipeline.middle_processors.iter_mut() {
+        if let PlanProcessor::DataSource(ds) = processor {
+            let stream_name = ds.stream_name().to_string();
+            let definition = stream_defs.get(&stream_name).ok_or_else(|| {
+                format!("stream {stream_name} missing definition when attaching sources")
+            })?;
+            let StreamProps::Mqtt(stream_props) = definition.props();
+            let processor_id = ds.id().to_string();
+            let schema = ds.schema();
+
+            let mut config = MqttSourceConfig::new(
+                processor_id.clone(),
+                stream_props.broker_url.clone(),
+                stream_props.topic.clone(),
+                stream_props.qos,
+            );
+            if let Some(client_id) = &stream_props.client_id {
+                config = config.with_client_id(client_id.clone());
+            }
+            if let Some(connector_key) = &stream_props.connector_key {
+                config = config.with_connector_key(connector_key.clone());
+            }
+            let connector =
+                MqttSourceConnector::new(format!("{processor_id}_source_connector"), config);
+            let decoder = Arc::new(JsonDecoder::new(stream_name, schema));
+            ds.add_connector(Box::new(connector), decoder);
+            attached = true;
+        }
+    }
+
+    if attached {
+        Ok(())
+    } else {
+        Err("no datasource processors available to attach connectors".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::{global_catalog, MqttStreamProps, StreamDefinition, StreamProps};
+    use datatypes::{ColumnSchema, ConcreteDatatype, Int64Type, Schema};
+    use tokio::runtime::Runtime;
+
+    fn install_stream(name: &str) {
+        let schema = Schema::new(vec![ColumnSchema::new(
+            name.to_string(),
+            "value".to_string(),
+            ConcreteDatatype::Int64(Int64Type),
+        )]);
+        let definition = StreamDefinition::new(
+            name.to_string(),
+            Arc::new(schema),
+            StreamProps::Mqtt(MqttStreamProps::new(
+                "mqtt://localhost:1883",
+                format!("{name}/in"),
+                0,
+            )),
+        );
+        global_catalog().upsert(definition);
+    }
+
+    fn sample_pipeline(id: &str, stream: &str) -> PipelineDefinition {
+        let sink = SinkDefinition::new(
+            format!("{id}_sink"),
+            SinkType::Mqtt,
+            SinkProps::Mqtt(MqttSinkProps::new(
+                "mqtt://localhost:1883",
+                format!("{id}/out"),
+                0,
+            )),
+        );
+        PipelineDefinition::new(
+            id.to_string(),
+            format!("SELECT * FROM {stream}"),
+            vec![sink],
+        )
+    }
+
+    #[test]
+    fn create_and_list_pipeline() {
+        install_stream("test_stream");
+        let manager = PipelineManager::new();
+        let snapshot = manager
+            .create_pipeline(sample_pipeline("pipe_a", "test_stream"))
+            .expect("create pipeline");
+        assert_eq!(snapshot.status, PipelineStatus::Created);
+        let list = manager.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].definition.id(), "pipe_a");
+        Runtime::new()
+            .unwrap()
+            .block_on(manager.delete_pipeline("pipe_a"))
+            .expect("delete pipeline");
+    }
+
+    #[test]
+    fn prevent_duplicate_pipeline() {
+        install_stream("dup_stream");
+        let manager = PipelineManager::new();
+        manager
+            .create_pipeline(sample_pipeline("dup_pipe", "dup_stream"))
+            .expect("first creation");
+        let result = manager.create_pipeline(sample_pipeline("dup_pipe", "dup_stream"));
+        assert!(matches!(result, Err(PipelineError::AlreadyExists(_))));
+        Runtime::new()
+            .unwrap()
+            .block_on(manager.delete_pipeline("dup_pipe"))
+            .ok();
+    }
+}
