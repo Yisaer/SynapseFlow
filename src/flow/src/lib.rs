@@ -3,6 +3,7 @@ pub mod codec;
 pub mod connector;
 pub mod expr;
 pub mod model;
+pub mod pipeline;
 pub mod planner;
 pub mod processor;
 pub mod shared_stream;
@@ -25,6 +26,10 @@ pub use expr::{
     ConcatFunc, ConversionError, EvalContext, ScalarExpr, StreamSqlConverter, UnaryFunc,
 };
 pub use model::{Collection, RecordBatch};
+pub use pipeline::{
+    MqttSinkProps, PipelineDefinition, PipelineError, PipelineManager, SinkDefinition, SinkProps,
+    SinkType,
+};
 pub use planner::create_physical_plan;
 pub use planner::logical::{
     BaseLogicalPlan, DataSinkPlan, DataSource, Filter, LogicalPlan, Project,
