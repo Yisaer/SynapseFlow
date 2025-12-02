@@ -222,14 +222,21 @@ impl PipelineManager {
 
     /// Remove a pipeline runtime and close it if running.
     pub async fn delete_pipeline(&self, pipeline_id: &str) -> Result<(), PipelineError> {
-        let entry = {
+        let maybe_entry = {
             let mut guard = self.pipelines.write().expect("pipeline manager poisoned");
-            guard
-                .remove(pipeline_id)
-                .ok_or_else(|| PipelineError::NotFound(pipeline_id.to_string()))?
+            guard.remove(pipeline_id)
         };
+        let entry = maybe_entry.ok_or_else(|| PipelineError::NotFound(pipeline_id.to_string()))?;
         if matches!(entry.status, PipelineStatus::Running) {
-            close_pipeline(entry.pipeline).await?;
+            let pipeline_id = entry.definition.id().to_string();
+            tokio::spawn(async move {
+                if let Err(err) = close_pipeline(entry.pipeline).await {
+                    eprintln!(
+                        "[PipelineManager] failed to close pipeline {}: {err}",
+                        pipeline_id
+                    );
+                }
+            });
         }
         Ok(())
     }
@@ -237,7 +244,7 @@ impl PipelineManager {
 
 async fn close_pipeline(mut pipeline: ProcessorPipeline) -> Result<(), PipelineError> {
     pipeline
-        .quick_close()
+        .graceful_close()
         .await
         .map_err(|err| PipelineError::Runtime(err.to_string()))
 }
