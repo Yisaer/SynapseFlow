@@ -35,7 +35,8 @@ pub use planner::logical::{
     BaseLogicalPlan, DataSinkPlan, DataSource, Filter, LogicalPlan, Project,
 };
 pub use planner::sink::{
-    NopSinkConfig, PipelineSink, PipelineSinkConnector, SinkConnectorConfig, SinkEncoderConfig,
+    CommonSinkProps, NopSinkConfig, PipelineSink, PipelineSinkConnector, SinkConnectorConfig,
+    SinkEncoderConfig,
 };
 pub use processor::{
     ControlSignal, ControlSourceProcessor, DataSourceProcessor, Processor, ProcessorError,

@@ -1,5 +1,6 @@
 use crate::catalog::{global_catalog, StreamDefinition, StreamProps};
 use crate::connector::{MqttSinkConfig, MqttSourceConfig, MqttSourceConnector};
+use crate::planner::sink::CommonSinkProps;
 use crate::processor::processor_builder::{PlanProcessor, ProcessorPipeline};
 use crate::processor::Processor;
 use crate::{
@@ -91,6 +92,7 @@ pub struct SinkDefinition {
     pub sink_id: String,
     pub sink_type: SinkType,
     pub props: SinkProps,
+    pub common: CommonSinkProps,
 }
 
 impl SinkDefinition {
@@ -99,7 +101,13 @@ impl SinkDefinition {
             sink_id: sink_id.into(),
             sink_type,
             props,
+            common: CommonSinkProps::default(),
         }
+    }
+
+    pub fn with_common_props(mut self, common: CommonSinkProps) -> Self {
+        self.common = common;
+        self
     }
 }
 
@@ -305,7 +313,9 @@ fn build_sinks_from_definition(
                         encoder_id: format!("{}_sink_encoder", sink.sink_id),
                     },
                 );
-                sinks.push(PipelineSink::new(sink.sink_id.clone(), vec![connector]));
+                let pipeline_sink = PipelineSink::new(sink.sink_id.clone(), vec![connector])
+                    .with_common_props(sink.common.clone());
+                sinks.push(pipeline_sink);
             }
         }
     }

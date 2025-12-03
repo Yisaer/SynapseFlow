@@ -1,11 +1,13 @@
 use crate::connector::sink::mqtt::MqttSinkConfig;
 use std::fmt;
+use std::time::Duration;
 
 /// Declarative description of a sink processor in the logical/physical plans.
 #[derive(Clone)]
 pub struct PipelineSink {
     pub sink_id: String,
     pub forward_to_result: bool,
+    pub common: CommonSinkProps,
     pub connectors: Vec<PipelineSinkConnector>,
 }
 
@@ -15,6 +17,7 @@ impl PipelineSink {
         Self {
             sink_id: sink_id.into(),
             forward_to_result: false,
+            common: CommonSinkProps::default(),
             connectors,
         }
     }
@@ -24,6 +27,11 @@ impl PipelineSink {
         self.forward_to_result = forward;
         self
     }
+
+    pub fn with_common_props(mut self, common: CommonSinkProps) -> Self {
+        self.common = common;
+        self
+    }
 }
 
 impl fmt::Debug for PipelineSink {
@@ -31,6 +39,7 @@ impl fmt::Debug for PipelineSink {
         f.debug_struct("PipelineSink")
             .field("sink_id", &self.sink_id)
             .field("forward_to_result", &self.forward_to_result)
+            .field("common", &self.common)
             .field("connectors", &self.connectors)
             .finish()
     }
@@ -83,4 +92,17 @@ pub struct NopSinkConfig;
 #[derive(Clone, Debug)]
 pub enum SinkEncoderConfig {
     Json { encoder_id: String },
+}
+
+/// Common sink-level properties (batching, etc.).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommonSinkProps {
+    pub batch_count: Option<usize>,
+    pub batch_duration: Option<Duration>,
+}
+
+impl CommonSinkProps {
+    pub fn is_batching_enabled(&self) -> bool {
+        self.batch_count.is_some() || self.batch_duration.is_some()
+    }
 }

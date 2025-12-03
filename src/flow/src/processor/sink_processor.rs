@@ -55,7 +55,7 @@ pub struct SinkProcessor {
     control_inputs: Vec<broadcast::Receiver<ControlSignal>>,
     output: broadcast::Sender<StreamData>,
     control_output: broadcast::Sender<ControlSignal>,
-    connectors: Vec<ConnectorBinding>,
+    connector: Option<ConnectorBinding>,
     forward_to_result: bool,
 }
 
@@ -88,7 +88,7 @@ impl SinkProcessor {
             control_inputs: Vec::new(),
             output,
             control_output,
-            connectors: Vec::new(),
+            connector: None,
             forward_to_result: false,
         }
     }
@@ -105,21 +105,19 @@ impl SinkProcessor {
 
     /// Register a connector binding.
     pub fn add_connector(&mut self, connector: Box<dyn SinkConnector>) {
-        self.connectors.push(ConnectorBinding { connector });
+        self.connector = Some(ConnectorBinding { connector });
     }
 
     async fn handle_payload(
         processor_id: &str,
-        connectors: &mut [ConnectorBinding],
+        connector: &mut ConnectorBinding,
         payload: &[u8],
         row_count: u64,
     ) -> Result<(), ProcessorError> {
         SINK_RECORDS_IN
             .with_label_values(&[processor_id])
             .inc_by(row_count);
-        for connector in connectors.iter_mut() {
-            connector.publish(payload).await?;
-        }
+        connector.publish(payload).await?;
 
         SINK_RECORDS_OUT
             .with_label_values(&[processor_id])
@@ -127,11 +125,8 @@ impl SinkProcessor {
         Ok(())
     }
 
-    async fn handle_terminal(connectors: &mut [ConnectorBinding]) -> Result<(), ProcessorError> {
-        for connector in connectors.iter_mut() {
-            connector.close().await?;
-        }
-        Ok(())
+    async fn handle_terminal(connector: &mut ConnectorBinding) -> Result<(), ProcessorError> {
+        connector.close().await
     }
 }
 
@@ -149,14 +144,18 @@ impl Processor for SinkProcessor {
         let forward_data = self.forward_to_result;
         let control_output = self.control_output.clone();
 
-        let mut connectors = std::mem::take(&mut self.connectors);
+        let Some(mut connector) = self.connector.take() else {
+            return tokio::spawn(async {
+                Err(ProcessorError::InvalidConfiguration(
+                    "sink connector missing".to_string(),
+                ))
+            });
+        };
         let processor_id = self.id.clone();
         println!("[SinkProcessor:{processor_id}] starting");
 
         tokio::spawn(async move {
-            for binding in connectors.iter_mut() {
-                binding.ready().await?;
-            }
+            connector.ready().await?;
             loop {
                 tokio::select! {
                     biased;
@@ -166,7 +165,7 @@ impl Processor for SinkProcessor {
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
                                 println!("[SinkProcessor:{processor_id}] received StreamEnd (control)");
-                                Self::handle_terminal(&mut connectors).await?;
+                                Self::handle_terminal(&mut connector).await?;
                                 println!("[SinkProcessor:{processor_id}] stopped");
                                 return Ok(());
                             }
@@ -180,7 +179,7 @@ impl Processor for SinkProcessor {
                             Some(Ok(StreamData::Encoded { collection, payload })) => {
                                 let rows = collection.num_rows() as u64;
                                 if let Err(err) =
-                                    Self::handle_payload(&processor_id, &mut connectors, &payload, rows).await
+                                    Self::handle_payload(&processor_id, &mut connector, &payload, rows).await
                                 {
                                     println!("[SinkProcessor:{processor_id}] payload handling error: {err}");
                                     forward_error(&output, &processor_id, err.to_string()).await?;
@@ -197,7 +196,7 @@ impl Processor for SinkProcessor {
                             }
                             Some(Ok(StreamData::Bytes(payload))) => {
                                 if let Err(err) =
-                                    Self::handle_payload(&processor_id, &mut connectors, &payload, 1).await
+                                    Self::handle_payload(&processor_id, &mut connector, &payload, 1).await
                                 {
                                     println!("[SinkProcessor:{processor_id}] payload handling error: {err}");
                                     forward_error(&output, &processor_id, err.to_string()).await?;
@@ -226,7 +225,7 @@ impl Processor for SinkProcessor {
 
                                 if is_terminal {
                                     println!("[SinkProcessor:{processor_id}] received StreamEnd (data)");
-                                    Self::handle_terminal(&mut connectors).await?;
+                                    Self::handle_terminal(&mut connector).await?;
                                     println!("[SinkProcessor:{processor_id}] stopped");
                                     return Ok(());
                                 }
@@ -241,7 +240,7 @@ impl Processor for SinkProcessor {
                                 continue;
                             }
                             None => {
-                                Self::handle_terminal(&mut connectors).await?;
+                                Self::handle_terminal(&mut connector).await?;
                                 println!("[SinkProcessor:{processor_id}] stopped");
                                 return Ok(());
                             }

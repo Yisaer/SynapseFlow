@@ -9,8 +9,8 @@ use crate::planner::logical::{
 };
 use crate::planner::physical::physical_project::PhysicalProjectField;
 use crate::planner::physical::{
-    PhysicalDataSink, PhysicalDataSource, PhysicalFilter, PhysicalPlan, PhysicalProject,
-    PhysicalSharedStream,
+    PhysicalBatch, PhysicalDataSink, PhysicalDataSource, PhysicalEncoder, PhysicalFilter,
+    PhysicalPlan, PhysicalProject, PhysicalSharedStream, PhysicalSinkConnector,
 };
 use std::sync::Arc;
 
@@ -152,7 +152,47 @@ fn create_physical_data_sink(
     if physical_children.len() != 1 {
         return Err("DataSink plan must have exactly one child".to_string());
     }
-    let physical_sink = PhysicalDataSink::new(physical_children, index, logical_sink.sinks.clone());
+
+    let input_child = Arc::clone(&physical_children[0]);
+    let mut connectors = Vec::new();
+    let mut encoder_children = Vec::new();
+    let mut next_index = index + 1;
+    for sink in &logical_sink.sinks {
+        let mut sink_input = Arc::clone(&input_child);
+        if sink.common.is_batching_enabled() {
+            let batch_plan = PhysicalBatch::new(
+                vec![Arc::clone(&input_child)],
+                next_index,
+                sink.sink_id.clone(),
+                sink.common.clone(),
+            );
+            sink_input = Arc::new(PhysicalPlan::Batch(batch_plan));
+            next_index += 1;
+        }
+
+        for (connector_idx, connector) in sink.connectors.iter().enumerate() {
+            let encoder = PhysicalEncoder::new(
+                vec![Arc::clone(&sink_input)],
+                next_index,
+                sink.sink_id.clone(),
+                connector.connector_id.clone(),
+                connector.encoder.clone(),
+            );
+            encoder_children.push(Arc::new(PhysicalPlan::Encoder(encoder)));
+            connectors.push(PhysicalSinkConnector::new(
+                sink.sink_id.clone(),
+                sink.forward_to_result && connector_idx == 0,
+                connector.connector_id.clone(),
+                connector.connector.clone(),
+                next_index,
+            ));
+            next_index += 1;
+        }
+    }
+    if connectors.is_empty() {
+        return Err("DataSink plan must define at least one connector".to_string());
+    }
+    let physical_sink = PhysicalDataSink::new(encoder_children, index, connectors);
     Ok(Arc::new(PhysicalPlan::DataSink(physical_sink)))
 }
 

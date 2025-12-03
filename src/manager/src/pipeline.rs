@@ -9,9 +9,11 @@ use flow::pipeline::{
     MqttSinkProps, PipelineDefinition, PipelineError, PipelineManager, PipelineStatus,
     SinkDefinition, SinkProps, SinkType,
 };
+use flow::planner::sink::CommonSinkProps;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -53,6 +55,8 @@ pub struct CreatePipelineSinkRequest {
     pub sink_type: String,
     #[serde(default)]
     pub props: SinkPropsRequest,
+    #[serde(rename = "commonSinkProps", default)]
+    pub common: CommonSinkPropsRequest,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -68,6 +72,16 @@ impl SinkPropsRequest {
     }
 }
 
+impl CommonSinkPropsRequest {
+    fn to_common_props(&self) -> CommonSinkProps {
+        let duration = self.batch_duration_ms.map(Duration::from_millis);
+        CommonSinkProps {
+            batch_count: self.batch_count,
+            batch_duration: duration,
+        }
+    }
+}
+
 #[derive(Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct MqttSinkPropsRequest {
@@ -77,6 +91,15 @@ pub struct MqttSinkPropsRequest {
     pub retain: Option<bool>,
     pub client_id: Option<String>,
     pub connector_key: Option<String>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct CommonSinkPropsRequest {
+    #[serde(rename = "batchCount")]
+    pub batch_count: Option<usize>,
+    #[serde(rename = "batchDuration")]
+    pub batch_duration_ms: Option<u64>,
 }
 
 pub async fn create_pipeline_handler(
@@ -209,6 +232,7 @@ fn build_pipeline_definition(req: &CreatePipelineRequest) -> Result<PipelineDefi
             }
             other => return Err(format!("unsupported sink type: {other}")),
         };
+        let sink_definition = sink_definition.with_common_props(sink_req.common.to_common_props());
         sinks.push(sink_definition);
     }
     Ok(PipelineDefinition::new(
