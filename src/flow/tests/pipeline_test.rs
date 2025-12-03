@@ -118,6 +118,12 @@ async fn run_test_case(test_case: TestCase) {
                 }
             }
         }
+        StreamData::Encoded { .. } => {
+            panic!(
+                "Expected Collection data, but received encoded payload for test: {}",
+                test_case.name
+            );
+        }
         StreamData::Control(_) => {
             panic!(
                 "Expected Collection data, but received control signal for test: {}",

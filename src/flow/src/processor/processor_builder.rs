@@ -10,9 +10,9 @@ use crate::connector::sink::SinkConnector;
 use crate::planner::physical::PhysicalPlan;
 use crate::planner::sink::{PipelineSink, SinkConnectorConfig, SinkEncoderConfig};
 use crate::processor::{
-    ControlSignal, ControlSourceProcessor, DataSourceProcessor, FilterProcessor, Processor,
-    ProcessorError, ProjectProcessor, ResultCollectProcessor, SharedStreamProcessor, SinkProcessor,
-    StreamData,
+    ControlSignal, ControlSourceProcessor, DataSourceProcessor, EncoderProcessor, FilterProcessor,
+    Processor, ProcessorError, ProjectProcessor, ResultCollectProcessor, SharedStreamProcessor,
+    SinkProcessor, StreamData,
 };
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -32,6 +32,8 @@ pub enum PlanProcessor {
     Project(ProjectProcessor),
     /// FilterProcessor created from PhysicalFilter
     Filter(FilterProcessor),
+    /// EncoderProcessor inserted before sinks
+    Encoder(EncoderProcessor),
 }
 
 impl PlanProcessor {
@@ -42,6 +44,7 @@ impl PlanProcessor {
             PlanProcessor::SharedSource(p) => p.id(),
             PlanProcessor::Project(p) => p.id(),
             PlanProcessor::Filter(p) => p.id(),
+            PlanProcessor::Encoder(p) => p.id(),
         }
     }
 
@@ -58,6 +61,7 @@ impl PlanProcessor {
             PlanProcessor::SharedSource(p) => p.start(),
             PlanProcessor::Project(p) => p.start(),
             PlanProcessor::Filter(p) => p.start(),
+            PlanProcessor::Encoder(p) => p.start(),
         }
     }
 
@@ -68,6 +72,7 @@ impl PlanProcessor {
             PlanProcessor::SharedSource(p) => p.subscribe_output(),
             PlanProcessor::Project(p) => p.subscribe_output(),
             PlanProcessor::Filter(p) => p.subscribe_output(),
+            PlanProcessor::Encoder(p) => p.subscribe_output(),
         }
     }
 
@@ -78,6 +83,7 @@ impl PlanProcessor {
             PlanProcessor::SharedSource(p) => p.subscribe_control_output(),
             PlanProcessor::Project(p) => p.subscribe_control_output(),
             PlanProcessor::Filter(p) => p.subscribe_control_output(),
+            PlanProcessor::Encoder(p) => p.subscribe_control_output(),
         }
     }
 
@@ -88,6 +94,7 @@ impl PlanProcessor {
             PlanProcessor::SharedSource(p) => p.add_input(receiver),
             PlanProcessor::Project(p) => p.add_input(receiver),
             PlanProcessor::Filter(p) => p.add_input(receiver),
+            PlanProcessor::Encoder(p) => p.add_input(receiver),
         }
     }
 
@@ -98,6 +105,7 @@ impl PlanProcessor {
             PlanProcessor::SharedSource(p) => p.add_control_input(receiver),
             PlanProcessor::Project(p) => p.add_control_input(receiver),
             PlanProcessor::Filter(p) => p.add_control_input(receiver),
+            PlanProcessor::Encoder(p) => p.add_control_input(receiver),
         }
     }
 }
@@ -452,18 +460,18 @@ fn connect_processors(
 pub fn create_processor_pipeline(
     physical_plan: Arc<PhysicalPlan>,
 ) -> Result<ProcessorPipeline, ProcessorError> {
-    let (plan_without_sinks, sink_processors) = extract_pipeline_sinks(physical_plan)?;
-    if sink_processors.is_empty() {
+    let (plan_without_sinks, sink_components) = extract_pipeline_sinks(physical_plan)?;
+    if sink_components.is_empty() {
         return Err(ProcessorError::InvalidConfiguration(
             "At least one sink definition is required".to_string(),
         ));
     }
-    build_processor_pipeline(plan_without_sinks, sink_processors)
+    build_processor_pipeline(plan_without_sinks, sink_components)
 }
 
 fn build_processor_pipeline(
     physical_plan: Arc<PhysicalPlan>,
-    mut sink_processors: Vec<SinkProcessor>,
+    sink_components: Vec<(PlanProcessor, SinkProcessor)>,
 ) -> Result<ProcessorPipeline, ProcessorError> {
     let mut control_source = ControlSourceProcessor::new("control_source");
     let (pipeline_input_sender, pipeline_input_receiver) = mpsc::channel(100);
@@ -490,7 +498,8 @@ fn build_processor_pipeline(
         ));
     }
 
-    for sink in sink_processors.iter_mut() {
+    let mut sink_pairs = sink_components;
+    for (encoder, sink) in sink_pairs.iter_mut() {
         let receiver = processor_map
             .get_processor(root_index)
             .and_then(|proc| proc.subscribe_output())
@@ -499,13 +508,30 @@ fn build_processor_pipeline(
                     "Root processor is missing broadcast output".to_string(),
                 )
             })?;
-        sink.add_input(receiver);
+        encoder.add_input(receiver);
         if let Some(control_rx) = processor_map
             .get_processor(root_index)
             .and_then(|proc| proc.subscribe_control_output())
         {
+            encoder.add_control_input(control_rx);
+        }
+
+        let encoder_output = encoder.subscribe_output().ok_or_else(|| {
+            ProcessorError::InvalidConfiguration(
+                "Encoder processor is missing broadcast output".to_string(),
+            )
+        })?;
+        sink.add_input(encoder_output);
+        if let Some(control_rx) = encoder.subscribe_control_output() {
             sink.add_control_input(control_rx);
         }
+    }
+
+    let mut encoder_processors = Vec::new();
+    let mut sink_processors = Vec::new();
+    for (encoder, sink) in sink_pairs.into_iter() {
+        encoder_processors.push(encoder);
+        sink_processors.push(sink);
     }
 
     let mut result_sink = None;
@@ -536,6 +562,7 @@ fn build_processor_pipeline(
     }
 
     let mut middle_processors = processor_map.get_all_processors();
+    middle_processors.extend(encoder_processors);
     let pipeline_id = Uuid::new_v4().to_string();
     for processor in &mut middle_processors {
         processor.set_pipeline_id(&pipeline_id);
@@ -558,7 +585,7 @@ fn build_processor_pipeline(
 
 fn extract_pipeline_sinks(
     plan: Arc<PhysicalPlan>,
-) -> Result<(Arc<PhysicalPlan>, Vec<SinkProcessor>), ProcessorError> {
+) -> Result<(Arc<PhysicalPlan>, Vec<(PlanProcessor, SinkProcessor)>), ProcessorError> {
     match plan.as_ref() {
         PhysicalPlan::DataSink(sink_plan) => {
             if sink_plan.base.children().len() != 1 {
@@ -567,11 +594,11 @@ fn extract_pipeline_sinks(
                 ));
             }
             let child = Arc::clone(&sink_plan.base.children()[0]);
-            let mut sinks = Vec::new();
+            let mut components = Vec::new();
             for sink in &sink_plan.sinks {
-                sinks.push(build_sink_processor(sink)?);
+                components.extend(build_sink_components(sink)?);
             }
-            Ok((child, sinks))
+            Ok((child, components))
         }
         _ => Err(ProcessorError::InvalidConfiguration(
             "Physical plan must terminate with a data sink node".to_string(),
@@ -579,19 +606,32 @@ fn extract_pipeline_sinks(
     }
 }
 
-fn build_sink_processor(sink: &PipelineSink) -> Result<SinkProcessor, ProcessorError> {
-    let mut processor = SinkProcessor::new(sink.sink_id.clone());
-    if sink.forward_to_result {
-        processor.enable_result_forwarding();
-    } else {
-        processor.disable_result_forwarding();
+fn build_sink_components(
+    sink: &PipelineSink,
+) -> Result<Vec<(PlanProcessor, SinkProcessor)>, ProcessorError> {
+    if sink.connectors.is_empty() {
+        return Err(ProcessorError::InvalidConfiguration(format!(
+            "sink {} must define at least one connector",
+            sink.sink_id
+        )));
     }
-    for connector in &sink.connectors {
+    let mut components = Vec::new();
+    for (idx, connector) in sink.connectors.iter().enumerate() {
+        let mut processor =
+            SinkProcessor::new(format!("{}_{}", sink.sink_id, connector.connector_id));
+        if sink.forward_to_result && idx == 0 {
+            processor.enable_result_forwarding();
+        } else {
+            processor.disable_result_forwarding();
+        }
         let boxed_connector = instantiate_connector(&connector.connector_id, &connector.connector)?;
+        processor.add_connector(boxed_connector);
         let encoder = instantiate_encoder(&connector.encoder);
-        processor.add_connector(boxed_connector, encoder);
+        let encoder_id = format!("{}_encoder_{}", sink.sink_id, connector.connector_id);
+        let encoder_processor = EncoderProcessor::new(encoder_id, encoder);
+        components.push((PlanProcessor::Encoder(encoder_processor), processor));
     }
-    Ok(processor)
+    Ok(components)
 }
 
 fn instantiate_encoder(cfg: &SinkEncoderConfig) -> Arc<dyn CollectionEncoder> {
