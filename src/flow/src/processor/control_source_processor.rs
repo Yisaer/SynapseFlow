@@ -101,17 +101,7 @@ impl Processor for ControlSourceProcessor {
                 tokio::select! {
                     biased;
                     control_item = control_streams.next(), if control_active => {
-                        if let Some(result) = control_item {
-                            let control_signal = match result {
-                                Ok(signal) => signal,
-                                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                                    println!(
-                                        "[ControlSourceProcessor:{processor_id}] control input lagged by {} messages",
-                                        skipped
-                                    );
-                                    continue;
-                                }
-                            };
+                        if let Some(Ok(control_signal)) = control_item {
                             handle_control_signal(&output, &control_output, control_signal).await?;
                             continue;
                         } else {

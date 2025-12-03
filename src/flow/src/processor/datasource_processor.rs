@@ -248,16 +248,9 @@ impl Processor for DataSourceProcessor {
                 tokio::select! {
                     biased;
                     control_item = control_streams.next(), if control_active => {
-                        if let Some(result) = control_item {
-                            let control_signal = match result {
-                                Ok(signal) => signal,
-                                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                                    println!("{log_prefix} control input lagged by {skipped} messages");
-                                    continue;
-                                }
-                            };
+                        if let Some(Ok(control_signal)) = control_item {
                             let is_terminal = control_signal.is_terminal();
-                            send_control_with_backpressure(&control_output, control_signal.clone()).await?;
+                            send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
                                 println!("{log_prefix} received StreamEnd (control)");
                                 Self::shutdown_connectors(&mut connectors).await?;

@@ -92,16 +92,9 @@ impl Processor for ProjectProcessor {
                 tokio::select! {
                     biased;
                     control_item = control_streams.next(), if control_active => {
-                        if let Some(result) = control_item {
-                            let control_data = match result {
-                                Ok(data) => data,
-                                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                                    println!("[ProjectProcessor:{id}] control input lagged by {skipped} messages");
-                                    continue;
-                                }
-                            };
-                            let is_terminal = control_data.is_terminal();
-                            send_control_with_backpressure(&control_output, control_data.clone()).await?;
+                        if let Some(Ok(control_signal)) = control_item {
+                            let is_terminal = control_signal.is_terminal();
+                            send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
                                 println!("[ProjectProcessor:{id}] received StreamEnd (control)");
                                 println!("[ProjectProcessor:{id}] stopped");

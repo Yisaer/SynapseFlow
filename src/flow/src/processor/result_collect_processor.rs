@@ -76,27 +76,7 @@ impl Processor for ResultCollectProcessor {
                 tokio::select! {
                     biased;
                     control_item = control_streams.next(), if control_active => {
-                        if let Some(result) = control_item {
-                            let control_signal = match result {
-                                Ok(data) => data,
-                                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                                    let message = format!(
-                                        "ResultCollectProcessor control input lagged by {} messages",
-                                        skipped
-                                    );
-                                    println!(
-                                        "[ResultCollectProcessor:{processor_id}] control input lagged by {skipped} messages"
-                                    );
-                                    output
-                                        .send(StreamData::error(
-                                            StreamError::new(message)
-                                                .with_source(processor_id.clone()),
-                                        ))
-                                        .await
-                                        .map_err(|_| ProcessorError::ChannelClosed)?;
-                                    continue;
-                                }
-                            };
+                        if let Some(Ok(control_signal)) = control_item {
                             if control_signal.is_terminal() {
                                 println!("[ResultCollectProcessor:{}] received StreamEnd (control)", processor_id);
                                 output

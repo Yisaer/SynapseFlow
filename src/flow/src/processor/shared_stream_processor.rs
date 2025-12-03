@@ -80,48 +80,25 @@ impl Processor for SharedStreamProcessor {
                 tokio::select! {
                     biased;
                     control_msg = control_inputs.next(), if control_inputs_active => {
-                        match control_msg {
-                            Some(Ok(signal)) => {
-                                let is_terminal = signal.is_terminal();
-                                send_control_with_backpressure(&control_output, signal.clone()).await?;
-                                if is_terminal {
-                                    return Ok(());
-                                }
+                        if let Some(Ok(signal)) = control_msg {
+                            let is_terminal = signal.is_terminal();
+                            send_control_with_backpressure(&control_output, signal).await?;
+                            if is_terminal {
+                                return Ok(());
                             }
-                            Some(Err(err)) => {
-                                let message =
-                                    format!("SharedStreamProcessor control input lagged: {err}");
-                                println!(
-                                    "[SharedStreamProcessor:{processor_id}] control input lagged: {err}"
-                                );
-                                forward_error(&output, &processor_id, message).await?;
-                                continue;
-                            }
-                            None => {
-                                control_inputs_active = false;
-                            }
+                        } else {
+                            control_inputs_active = false;
                         }
                     }
                     shared_control_msg = shared_control.next() => {
-                        match shared_control_msg {
-                            Some(Ok(signal)) => {
-                                let is_terminal = signal.is_terminal();
-                                send_control_with_backpressure(&control_output, signal.clone()).await?;
-                                if is_terminal {
-                                    return Ok(());
-                                }
-                            }
-                            Some(Err(err)) => {
-                                let message = format!("shared control lagged: {err}");
-                                println!(
-                                    "[SharedStreamProcessor:{processor_id}] shared control lagged: {err}"
-                                );
-                                forward_error(&output, &processor_id, message).await?;
-                                continue;
-                            }
-                            None => {
+                        if let Some(Ok(signal)) = shared_control_msg {
+                            let is_terminal = signal.is_terminal();
+                            send_control_with_backpressure(&control_output, signal).await?;
+                            if is_terminal {
                                 return Ok(());
                             }
+                        } else {
+                            return Ok(());
                         }
                     }
                     data_msg = inputs.next(), if input_active => {
