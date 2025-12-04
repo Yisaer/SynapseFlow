@@ -13,7 +13,8 @@ pub use catalog::{
     StreamType,
 };
 pub use codec::{
-    CodecError, CollectionEncoder, EncodeError, JsonDecoder, JsonEncoder, RecordDecoder,
+    CodecError, CollectionEncoder, CollectionEncoderStream, EncodeError, JsonDecoder, JsonEncoder,
+    RecordDecoder,
 };
 pub use datatypes::{
     BooleanType, ColumnSchema, ConcreteDatatype, Float32Type, Float64Type, Int16Type, Int32Type,
@@ -58,7 +59,9 @@ fn build_physical_plan_from_sql(
     let select_stmt = parser::parse_sql(sql)?;
     let schema_binding = build_schema_binding(&select_stmt)?;
     let logical_plan = create_logical_plan(select_stmt, sinks)?;
-    let physical_plan = create_physical_plan(logical_plan, &schema_binding)?;
+    println!("[LogicalPlan] topology:");
+    logical_plan.print_topology(0);
+    let physical_plan = create_physical_plan(Arc::clone(&logical_plan), &schema_binding)?;
     Ok(physical_plan)
 }
 
@@ -109,7 +112,7 @@ fn build_schema_binding(
 ///     SinkConnectorConfig::Nop(NopSinkConfig),
 ///     SinkEncoderConfig::Json { encoder_id: "json".into() },
 /// );
-/// let sink = PipelineSink::new("custom_sink", vec![connector]);
+/// let sink = PipelineSink::new("custom_sink", connector);
 /// let pipeline = create_pipeline("SELECT a FROM stream", vec![sink])?;
 /// # Ok(()) }
 /// ```
@@ -134,7 +137,6 @@ pub fn create_pipeline_with_log_sink(
             encoder_id: "log_sink_encoder".into(),
         },
     );
-    let sink =
-        PipelineSink::new("log_sink", vec![connector]).with_forward_to_result(forward_to_result);
+    let sink = PipelineSink::new("log_sink", connector).with_forward_to_result(forward_to_result);
     create_pipeline(sql, vec![sink])
 }

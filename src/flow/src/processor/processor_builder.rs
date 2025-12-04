@@ -7,12 +7,12 @@ use crate::codec::{CollectionEncoder, JsonEncoder};
 use crate::connector::sink::mqtt::MqttSinkConnector;
 use crate::connector::sink::nop::NopSinkConnector;
 use crate::connector::sink::SinkConnector;
-use crate::planner::physical::{PhysicalPlan, PhysicalSinkConnector};
+use crate::planner::physical::{PhysicalPlan};
 use crate::planner::sink::{SinkConnectorConfig, SinkEncoderConfig};
 use crate::processor::{
     BatchProcessor, ControlSignal, ControlSourceProcessor, DataSourceProcessor, EncoderProcessor,
     FilterProcessor, Processor, ProcessorError, ProjectProcessor, ResultCollectProcessor,
-    SharedStreamProcessor, SinkProcessor, StreamData,
+    SharedStreamProcessor, SinkProcessor, StreamData, StreamingEncoderProcessor,
 };
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -22,7 +22,7 @@ use uuid::Uuid;
 /// Enum for all processor types created from PhysicalPlan
 ///
 /// This enum allows storing different types of processors in a unified way.
-/// Currently supports DataSourceProcessor, ProjectProcessor, and FilterProcessor.
+/// All processors are created through PhysicalPlan.
 pub enum PlanProcessor {
     /// DataSourceProcessor created from PhysicalDatasource
     DataSource(DataSourceProcessor),
@@ -36,6 +36,12 @@ pub enum PlanProcessor {
     Batch(BatchProcessor),
     /// EncoderProcessor inserted before sinks
     Encoder(EncoderProcessor),
+    /// Streaming encoder processor combining batch + encoder
+    StreamingEncoder(StreamingEncoderProcessor),
+    /// SinkProcessor created from PhysicalDataSink
+    Sink(SinkProcessor),
+    /// ResultCollectProcessor created from PhysicalResultCollect
+    ResultCollect(ResultCollectProcessor),
 }
 
 impl PlanProcessor {
@@ -48,6 +54,9 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.id(),
             PlanProcessor::Batch(p) => p.id(),
             PlanProcessor::Encoder(p) => p.id(),
+            PlanProcessor::StreamingEncoder(p) => p.id(),
+            PlanProcessor::Sink(p) => p.id(),
+            PlanProcessor::ResultCollect(p) => p.id(),
         }
     }
 
@@ -66,6 +75,9 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.start(),
             PlanProcessor::Batch(p) => p.start(),
             PlanProcessor::Encoder(p) => p.start(),
+            PlanProcessor::StreamingEncoder(p) => p.start(),
+            PlanProcessor::Sink(p) => p.start(),
+            PlanProcessor::ResultCollect(p) => p.start(),
         }
     }
 
@@ -78,6 +90,9 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.subscribe_output(),
             PlanProcessor::Batch(p) => p.subscribe_output(),
             PlanProcessor::Encoder(p) => p.subscribe_output(),
+            PlanProcessor::StreamingEncoder(p) => p.subscribe_output(),
+            PlanProcessor::Sink(p) => p.subscribe_output(),
+            PlanProcessor::ResultCollect(p) => p.subscribe_output(),
         }
     }
 
@@ -90,6 +105,9 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.subscribe_control_output(),
             PlanProcessor::Batch(p) => p.subscribe_control_output(),
             PlanProcessor::Encoder(p) => p.subscribe_control_output(),
+            PlanProcessor::StreamingEncoder(p) => p.subscribe_control_output(),
+            PlanProcessor::Sink(p) => p.subscribe_control_output(),
+            PlanProcessor::ResultCollect(p) => p.subscribe_control_output(),
         }
     }
 
@@ -102,6 +120,9 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.add_input(receiver),
             PlanProcessor::Batch(p) => p.add_input(receiver),
             PlanProcessor::Encoder(p) => p.add_input(receiver),
+            PlanProcessor::StreamingEncoder(p) => p.add_input(receiver),
+            PlanProcessor::Sink(p) => p.add_input(receiver),
+            PlanProcessor::ResultCollect(p) => p.add_input(receiver),
         }
     }
 
@@ -114,6 +135,9 @@ impl PlanProcessor {
             PlanProcessor::Filter(p) => p.add_control_input(receiver),
             PlanProcessor::Batch(p) => p.add_control_input(receiver),
             PlanProcessor::Encoder(p) => p.add_control_input(receiver),
+            PlanProcessor::StreamingEncoder(p) => p.add_control_input(receiver),
+            PlanProcessor::Sink(p) => p.add_control_input(receiver),
+            PlanProcessor::ResultCollect(p) => p.add_control_input(receiver),
         }
     }
 }
@@ -133,8 +157,6 @@ pub struct ProcessorPipeline {
     pub control_source: ControlSourceProcessor,
     /// Middle processors created from PhysicalPlan (various types)
     pub middle_processors: Vec<PlanProcessor>,
-    /// Sink processors wired to the PhysicalPlan root (fan-out for connectors)
-    pub sink_processors: Vec<SinkProcessor>,
     /// Result sink processor (data tail) if downstream forwarding is enabled
     pub result_sink: Option<ResultCollectProcessor>,
     /// Broadcast sender feeding the control source data input
@@ -158,9 +180,6 @@ impl ProcessorPipeline {
         // Start from downstream to upstream so that consumers are ready before producers.
         if let Some(result_sink) = &mut self.result_sink {
             self.handles.push(result_sink.start());
-        }
-        for sink in &mut self.sink_processors {
-            self.handles.push(sink.start());
         }
         let len = self.middle_processors.len();
         for idx in (0..len).rev() {
@@ -287,31 +306,21 @@ impl ProcessorPipeline {
 /// Create a processor from a PhysicalPlan node
 ///
 /// This function dispatches to the appropriate processor creation function
-/// based on the PhysicalPlan type. Currently only PhysicalDatasource is supported.
+/// based on the PhysicalPlan type. All processors are created through PhysicalPlan.
 ///
 /// # Arguments
 /// * `plan` - The PhysicalPlan node to create a processor from
-/// * `idx` - Index for generating processor ID
 ///
 /// # Returns
-/// A PlanProcessor enum variant corresponding to the plan type
+/// A ProcessorBuildOutput containing the created processor
 struct ProcessorBuildOutput {
     processor: Option<PlanProcessor>,
-    sink_components: Vec<(i64, SinkProcessor)>,
 }
 
 impl ProcessorBuildOutput {
     fn with_processor(processor: PlanProcessor) -> Self {
         Self {
             processor: Some(processor),
-            sink_components: Vec::new(),
-        }
-    }
-
-    fn with_sinks(sink_components: Vec<(i64, SinkProcessor)>) -> Self {
-        Self {
-            processor: None,
-            sink_components,
         }
     }
 }
@@ -319,40 +328,37 @@ impl ProcessorBuildOutput {
 fn create_processor_from_plan_node(
     plan: &Arc<PhysicalPlan>,
 ) -> Result<ProcessorBuildOutput, ProcessorError> {
-    let plan_index = plan.get_plan_index();
+    let plan_name = plan.get_plan_name();
     match plan.as_ref() {
         PhysicalPlan::DataSource(ds) => {
             let processor =
-                DataSourceProcessor::new(plan_index, ds.source_name().to_string(), ds.schema());
+                DataSourceProcessor::new(&plan_name, ds.source_name().to_string(), ds.schema());
             Ok(ProcessorBuildOutput::with_processor(
                 PlanProcessor::DataSource(processor),
             ))
         }
         PhysicalPlan::SharedStream(shared) => {
             let processor =
-                SharedStreamProcessor::new(plan_index, shared.stream_name().to_string());
+                SharedStreamProcessor::new(&plan_name, shared.stream_name().to_string());
             Ok(ProcessorBuildOutput::with_processor(
                 PlanProcessor::SharedSource(processor),
             ))
         }
         PhysicalPlan::Project(project) => {
-            let processor_id = format!("project_{}", plan_index);
-            let processor = ProjectProcessor::new(processor_id, Arc::new(project.clone()));
+            let processor = ProjectProcessor::new(plan_name.clone(), Arc::new(project.clone()));
             Ok(ProcessorBuildOutput::with_processor(
                 PlanProcessor::Project(processor),
             ))
         }
         PhysicalPlan::Filter(filter) => {
-            let processor_id = format!("filter_{}", plan_index);
-            let processor = FilterProcessor::new(processor_id, Arc::new(filter.clone()));
+            let processor = FilterProcessor::new(plan_name.clone(), Arc::new(filter.clone()));
             Ok(ProcessorBuildOutput::with_processor(PlanProcessor::Filter(
                 processor,
             )))
         }
         PhysicalPlan::Batch(batch) => {
-            let processor_id = format!("batch_{}", plan_index);
             let processor = BatchProcessor::new(
-                processor_id,
+                plan_name.clone(),
                 batch.common.batch_count,
                 batch.common.batch_duration,
             );
@@ -361,26 +367,59 @@ fn create_processor_from_plan_node(
             )))
         }
         PhysicalPlan::Encoder(encoder) => {
-            let processor_id = format!("encoder_{}", plan_index);
             let encoder_impl = instantiate_encoder(&encoder.encoder);
-            let processor = EncoderProcessor::new(processor_id, encoder_impl);
+            let processor = EncoderProcessor::new(plan_name.clone(), encoder_impl);
             Ok(ProcessorBuildOutput::with_processor(
                 PlanProcessor::Encoder(processor),
             ))
         }
+        PhysicalPlan::StreamingEncoder(streaming) => {
+            let encoder_impl = instantiate_encoder(&streaming.encoder);
+            let processor = StreamingEncoderProcessor::new(
+                plan_name.clone(),
+                encoder_impl,
+                streaming.common.batch_count,
+                streaming.common.batch_duration,
+            );
+            Ok(ProcessorBuildOutput::with_processor(
+                PlanProcessor::StreamingEncoder(processor),
+            ))
+        }
         PhysicalPlan::DataSink(sink_plan) => {
-            let components = build_sink_components(&sink_plan.connectors)?;
-            Ok(ProcessorBuildOutput::with_sinks(components))
+            let processor_id = format!(
+                "sink_{}_{}",
+                sink_plan.connector.sink_id, sink_plan.connector.connector_id
+            );
+            let mut processor = SinkProcessor::new(processor_id);
+            if sink_plan.connector.forward_to_result {
+                processor.enable_result_forwarding();
+            } else {
+                processor.disable_result_forwarding();
+            }
+            let connector_impl = instantiate_connector(
+                &sink_plan.connector.connector_id,
+                &sink_plan.connector.connector,
+            )?;
+            processor.add_connector(connector_impl);
+            Ok(ProcessorBuildOutput::with_processor(PlanProcessor::Sink(
+                processor,
+            )))
+        }
+        PhysicalPlan::ResultCollect(_result_collect) => {
+            let processor = ResultCollectProcessor::new(plan_name.clone());
+            Ok(ProcessorBuildOutput::with_processor(
+                PlanProcessor::ResultCollect(processor),
+            ))
         }
     }
 }
 
 /// Internal structure to track processors created from PhysicalPlan nodes
 struct ProcessorMap {
-    /// Map from plan index to processor
-    processors: std::collections::HashMap<i64, PlanProcessor>,
+    /// Map from plan name to processor
+    processors: std::collections::HashMap<String, PlanProcessor>,
     /// Tracks whether a plan node has already been visited
-    visited: std::collections::HashSet<i64>,
+    visited: std::collections::HashSet<String>,
 }
 
 impl ProcessorMap {
@@ -391,24 +430,24 @@ impl ProcessorMap {
         }
     }
 
-    fn get_processor(&self, plan_index: i64) -> Option<&PlanProcessor> {
-        self.processors.get(&plan_index)
+    fn get_processor(&self, plan_name: &str) -> Option<&PlanProcessor> {
+        self.processors.get(plan_name)
     }
 
-    fn get_processor_mut(&mut self, plan_index: i64) -> Option<&mut PlanProcessor> {
-        self.processors.get_mut(&plan_index)
+    fn get_processor_mut(&mut self, plan_name: &str) -> Option<&mut PlanProcessor> {
+        self.processors.get_mut(plan_name)
     }
 
-    fn insert_processor(&mut self, plan_index: i64, processor: PlanProcessor) {
-        self.processors.insert(plan_index, processor);
+    fn insert_processor(&mut self, plan_name: String, processor: PlanProcessor) {
+        self.processors.insert(plan_name, processor);
     }
 
     fn get_all_processors(self) -> Vec<PlanProcessor> {
         self.processors.into_values().collect()
     }
 
-    fn mark_visited(&mut self, index: i64) -> bool {
-        self.visited.insert(index)
+    fn mark_visited(&mut self, plan_name: &str) -> bool {
+        self.visited.insert(plan_name.to_string())
     }
 }
 
@@ -421,23 +460,21 @@ impl ProcessorMap {
 fn build_processors_recursive(
     plan: Arc<PhysicalPlan>,
     processor_map: &mut ProcessorMap,
-    sink_components: &mut Vec<(i64, SinkProcessor)>,
 ) -> Result<(), ProcessorError> {
-    let plan_index = plan.get_plan_index();
-    if !processor_map.mark_visited(plan_index) {
+    let plan_name = plan.get_plan_name();
+    if !processor_map.mark_visited(&plan_name) {
         return Ok(());
     }
 
     // Create processor for current node
     let creation = create_processor_from_plan_node(&plan)?;
     if let Some(processor) = creation.processor {
-        processor_map.insert_processor(plan_index, processor);
+        processor_map.insert_processor(plan_name, processor);
     }
-    sink_components.extend(creation.sink_components);
 
     // Recursively process children
     for child in plan.children() {
-        build_processors_recursive(Arc::clone(child), processor_map, sink_components)?;
+        build_processors_recursive(Arc::clone(child), processor_map)?;
     }
 
     Ok(())
@@ -445,32 +482,69 @@ fn build_processors_recursive(
 
 /// Collect leaf node indices from PhysicalPlan tree
 fn collect_leaf_indices(plan: Arc<PhysicalPlan>) -> Vec<i64> {
-    let mut leaf_indices = Vec::new();
-
-    if plan.children().is_empty() {
-        leaf_indices.push(plan.get_plan_index());
-    } else {
-        for child in plan.children() {
-            leaf_indices.extend(collect_leaf_indices(Arc::clone(child)));
+    use std::collections::HashSet;
+    fn helper(
+        plan: Arc<PhysicalPlan>,
+        leaves: &mut HashSet<i64>,
+        visited: &mut HashSet<i64>,
+    ) {
+        let index = plan.get_plan_index();
+        if !visited.insert(index) {
+            return;
+        }
+        if plan.children().is_empty() {
+            leaves.insert(index);
+        } else {
+            for child in plan.children() {
+                helper(Arc::clone(child), leaves, visited);
+            }
         }
     }
 
-    leaf_indices
+    let mut leaves = HashSet::new();
+    let mut visited = HashSet::new();
+    helper(plan, &mut leaves, &mut visited);
+    leaves.into_iter().collect()
 }
 
 /// Collect parent-child relationships from PhysicalPlan tree
 fn collect_parent_child_relations(plan: Arc<PhysicalPlan>) -> Vec<(i64, i64)> {
-    let mut relations = Vec::new();
-    let parent_index = plan.get_plan_index();
-
-    for child in plan.children() {
-        let child_index = child.get_plan_index();
-        relations.push((parent_index, child_index));
-        // Recursively collect from children
-        relations.extend(collect_parent_child_relations(Arc::clone(child)));
+    use std::collections::HashSet;
+    fn helper(
+        plan: Arc<PhysicalPlan>,
+        relations: &mut HashSet<(i64, i64)>,
+        visited: &mut HashSet<i64>,
+    ) {
+        let parent_index = plan.get_plan_index();
+        if !visited.insert(parent_index) {
+            return;
+        }
+        for child in plan.children() {
+            let child_index = child.get_plan_index();
+            relations.insert((parent_index, child_index));
+            helper(Arc::clone(child), relations, visited);
+        }
     }
 
-    relations
+    let mut relations = HashSet::new();
+    let mut visited = HashSet::new();
+    helper(plan, &mut relations, &mut visited);
+    relations.into_iter().collect()
+}
+
+/// Build a mapping from plan index to plan name for all nodes in the PhysicalPlan tree
+fn build_index_to_name_mapping(
+    plan: &Arc<PhysicalPlan>,
+    mapping: &mut std::collections::HashMap<i64, String>,
+) {
+    let plan_index = plan.get_plan_index();
+    let plan_name = plan.get_plan_name();
+    mapping.insert(plan_index, plan_name);
+    
+    // Recursively process children
+    for child in plan.children() {
+        build_index_to_name_mapping(child, mapping);
+    }
 }
 
 /// Connect processors based on PhysicalPlan tree structure
@@ -483,40 +557,71 @@ fn connect_processors(
     processor_map: &mut ProcessorMap,
     control_source: &mut ControlSourceProcessor,
 ) -> Result<(), ProcessorError> {
+    // Build index to name mapping for quick lookup
+    let mut index_to_name_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    build_index_to_name_mapping(&physical_plan, &mut index_to_name_map);
+
     // 1. Connect ControlSourceProcessor to all leaf nodes
     let leaf_indices = collect_leaf_indices(Arc::clone(&physical_plan));
     for leaf_index in leaf_indices {
-        if let Some(processor) = processor_map.get_processor_mut(leaf_index) {
-            let receiver = control_source.subscribe_output().ok_or_else(|| {
-                ProcessorError::InvalidConfiguration("control source output unavailable".into())
-            })?;
-            processor.add_input(receiver);
-            if let Some(control_rx) = control_source.subscribe_control_output() {
-                processor.add_control_input(control_rx);
+        if let Some(leaf_plan_name) = index_to_name_map.get(&leaf_index) {
+            if let Some(processor) = processor_map.get_processor_mut(leaf_plan_name) {
+                let receiver = control_source.subscribe_output().ok_or_else(|| {
+                    ProcessorError::InvalidConfiguration("control source output unavailable".into())
+                })?;
+                processor.add_input(receiver);
+                if let Some(control_rx) = control_source.subscribe_control_output() {
+                    processor.add_control_input(control_rx);
+                }
             }
         }
     }
 
     // 2. Connect children outputs to parent inputs
     let relations = collect_parent_child_relations(Arc::clone(&physical_plan));
+    
+    // Debug: Print connection relationships
+    // println!("=== Processor Connection Relationships ===");
+    // let mut relation_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    // for (parent_idx, child_idx) in &relations {
+    //     *relation_counts.entry(*child_idx).or_insert(0) += 1;
+    //     if let (Some(child_name), Some(parent_name)) = (index_to_name_map.get(child_idx), index_to_name_map.get(parent_idx)) {
+    //         println!("  {} (index: {}) -> {} (index: {})", child_name, child_idx, parent_name, parent_idx);
+    //     }
+    // }
+    // println!("Child processor subscription counts:");
+    // for (child_idx, count) in relation_counts {
+    //     if let Some(child_name) = index_to_name_map.get(&child_idx) {
+    //         println!("  {} (index: {}): {} parent(s)", child_name, child_idx, count);
+    //     }
+    // }
+    // println!("=========================================");
+    
     for (parent_index, child_index) in relations {
-        let receiver = processor_map
-            .get_processor(child_index)
-            .and_then(|proc| proc.subscribe_output())
-            .ok_or_else(|| {
-                ProcessorError::InvalidConfiguration(format!(
-                    "Processor {} has no broadcast output",
-                    child_index
-                ))
-            })?;
+        if let (Some(child_plan_name), Some(parent_plan_name)) = (
+            index_to_name_map.get(&child_index),
+            index_to_name_map.get(&parent_index)
+        ) {
+            println!("Connecting {} -> {}", child_plan_name, parent_plan_name);
+            
+            let receiver = processor_map
+                .get_processor(child_plan_name)
+                .and_then(|proc| proc.subscribe_output())
+                .ok_or_else(|| {
+                    ProcessorError::InvalidConfiguration(format!(
+                        "Processor {} has no broadcast output",
+                        child_plan_name
+                    ))
+                })?;
 
-        let control_receiver = processor_map
-            .get_processor(child_index)
-            .and_then(|proc| proc.subscribe_control_output());
-        if let Some(parent_processor) = processor_map.get_processor_mut(parent_index) {
-            parent_processor.add_input(receiver);
-            if let Some(control_rx) = control_receiver {
-                parent_processor.add_control_input(control_rx);
+            let control_receiver = processor_map
+                .get_processor(child_plan_name)
+                .and_then(|proc| proc.subscribe_control_output());
+            if let Some(parent_processor) = processor_map.get_processor_mut(parent_plan_name) {
+                parent_processor.add_input(receiver);
+                if let Some(control_rx) = control_receiver {
+                    parent_processor.add_control_input(control_rx);
+                }
             }
         }
     }
@@ -531,6 +636,11 @@ fn connect_processors(
 pub fn create_processor_pipeline(
     physical_plan: Arc<PhysicalPlan>,
 ) -> Result<ProcessorPipeline, ProcessorError> {
+    // Print the PhysicalPlan topology structure for debugging
+    println!("=== PhysicalPlan Topology Structure ===");
+    physical_plan.print_topology(0);
+    println!("======================================");
+
     let mut control_source = ControlSourceProcessor::new("control_source");
     let (pipeline_input_sender, pipeline_input_receiver) = mpsc::channel(100);
     let (data_input_sender, data_input_receiver) =
@@ -541,18 +651,7 @@ pub fn create_processor_pipeline(
     control_source.add_control_input(control_signal_receiver);
 
     let mut processor_map = ProcessorMap::new();
-    let mut sink_components = Vec::new();
-    build_processors_recursive(
-        Arc::clone(&physical_plan),
-        &mut processor_map,
-        &mut sink_components,
-    )?;
-
-    if sink_components.is_empty() {
-        return Err(ProcessorError::InvalidConfiguration(
-            "At least one sink definition is required".to_string(),
-        ));
-    }
+    build_processors_recursive(Arc::clone(&physical_plan), &mut processor_map)?;
 
     connect_processors(
         Arc::clone(&physical_plan),
@@ -560,55 +659,26 @@ pub fn create_processor_pipeline(
         &mut control_source,
     )?;
 
-    let mut sink_processors = Vec::new();
-    for (encoder_index, mut sink) in sink_components {
-        let encoder_processor = processor_map.get_processor(encoder_index).ok_or_else(|| {
-            ProcessorError::InvalidConfiguration(format!(
-                "Encoder processor {} missing when wiring sinks",
-                encoder_index
-            ))
-        })?;
-        let encoder_output = encoder_processor.subscribe_output().ok_or_else(|| {
-            ProcessorError::InvalidConfiguration(format!(
-                "Encoder processor {} is missing broadcast output",
-                encoder_index
-            ))
-        })?;
-        sink.add_input(encoder_output);
-        if let Some(control_rx) = encoder_processor.subscribe_control_output() {
-            sink.add_control_input(control_rx);
-        }
-        sink_processors.push(sink);
-    }
-
-    let mut result_sink = None;
+    // Set up pipeline output from ResultCollect processor if present
     let mut pipeline_output_receiver = None;
-    let mut sink_outputs = Vec::new();
-    let mut sink_control_outputs = Vec::new();
-    for sink in sink_processors.iter_mut() {
-        if let Some(receiver) = sink.subscribe_output() {
-            sink_outputs.push(receiver);
-        }
-        if let Some(control_receiver) = sink.subscribe_control_output() {
-            sink_control_outputs.push(control_receiver);
-        }
-    }
+    let mut result_sink = None;
 
-    if !sink_outputs.is_empty() || !sink_control_outputs.is_empty() {
-        let mut collector = ResultCollectProcessor::new("result_sink");
-        for receiver in sink_outputs {
-            collector.add_input(receiver);
-        }
-        for control_receiver in sink_control_outputs {
-            collector.add_control_input(control_receiver);
-        }
-        let (result_output_sender, pipeline_output_rx) = mpsc::channel(100);
-        collector.set_output(result_output_sender);
-        result_sink = Some(collector);
-        pipeline_output_receiver = Some(pipeline_output_rx);
-    }
-
+    // Get all processors first
     let mut middle_processors = processor_map.get_all_processors();
+
+    // Extract ResultCollect processor (if any) to serve as pipeline output
+    // In multi-sink scenarios, there should be only one top-level ResultCollect processor
+    if let Some(pos) = middle_processors
+        .iter()
+        .position(|p| matches!(p, PlanProcessor::ResultCollect(_)))
+    {
+        if let PlanProcessor::ResultCollect(mut collector) = middle_processors.swap_remove(pos) {
+            let (result_output_sender, pipeline_output_rx) = mpsc::channel(100);
+            collector.set_output(result_output_sender);
+            pipeline_output_receiver = Some(pipeline_output_rx);
+            result_sink = Some(collector);
+        }
+    }
     let pipeline_id = Uuid::new_v4().to_string();
     for processor in &mut middle_processors {
         processor.set_pipeline_id(&pipeline_id);
@@ -619,7 +689,6 @@ pub fn create_processor_pipeline(
         output: pipeline_output_receiver,
         control_source,
         middle_processors,
-        sink_processors,
         result_sink,
         data_input_sender,
         data_input_buffer: Some(pipeline_input_receiver),
@@ -627,25 +696,6 @@ pub fn create_processor_pipeline(
         handles: Vec::new(),
         pipeline_id,
     })
-}
-
-fn build_sink_components(
-    connectors: &[PhysicalSinkConnector],
-) -> Result<Vec<(i64, SinkProcessor)>, ProcessorError> {
-    let mut components = Vec::new();
-    for connector in connectors {
-        let mut processor =
-            SinkProcessor::new(format!("{}_{}", connector.sink_id, connector.connector_id));
-        if connector.forward_to_result {
-            processor.enable_result_forwarding();
-        } else {
-            processor.disable_result_forwarding();
-        }
-        let boxed_connector = instantiate_connector(&connector.connector_id, &connector.connector)?;
-        processor.add_connector(boxed_connector);
-        components.push((connector.encoder_plan_index, processor));
-    }
-    Ok(components)
 }
 
 fn instantiate_encoder(cfg: &SinkEncoderConfig) -> Arc<dyn CollectionEncoder> {
@@ -713,7 +763,7 @@ mod tests {
         let processor = result
             .processor
             .expect("expected processor for physical project node");
-        assert_eq!(processor.id(), "project_1");
+        assert_eq!(processor.id(), "PhysicalProject_1");
         println!(
             "✅ SUCCESS: PhysicalProject processor created with ID: {}",
             processor.id()

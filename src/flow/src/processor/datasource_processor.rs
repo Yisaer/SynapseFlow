@@ -6,7 +6,7 @@
 use crate::codec::{JsonDecoder, RecordDecoder};
 use crate::connector::{ConnectorError, ConnectorEvent, SourceConnector};
 use crate::processor::base::{
-    fan_in_control_streams, fan_in_streams, forward_error, send_control_with_backpressure,
+    fan_in_control_streams, fan_in_streams, forward_error, log_received_data, send_control_with_backpressure,
     send_with_backpressure, DEFAULT_CHANNEL_CAPACITY,
 };
 use crate::processor::{ControlSignal, Processor, ProcessorError, StreamData, StreamError};
@@ -149,10 +149,10 @@ impl ConnectorBinding {
 }
 impl DataSourceProcessor {
     /// Create a new DataSourceProcessor from PhysicalDatasource
-    pub fn new(plan_index: i64, source_name: impl Into<String>, schema: Arc<Schema>) -> Self {
+    pub fn new(plan_name: &str, source_name: impl Into<String>, schema: Arc<Schema>) -> Self {
         Self::with_custom_id(
-            Some(plan_index),
-            format!("datasource_{plan_index}"),
+            None, // plan_index is no longer needed as we use plan_name for ID
+            plan_name.to_string(),
             source_name,
             schema,
         )
@@ -265,6 +265,7 @@ impl Processor for DataSourceProcessor {
                     item = input_streams.next() => {
                         match item {
                             Some(Ok(mut data)) => {
+                                log_received_data(&processor_id, &data);
                                 if let StreamData::Bytes(payload) = &data {
                                     match decoder.decode(payload) {
                                         Ok(batch) => {

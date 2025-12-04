@@ -22,6 +22,29 @@ pub trait CollectionEncoder: Send + Sync + 'static {
     fn encode(&self, collection: &dyn Collection) -> Result<Vec<u8>, EncodeError>;
     /// Convert a tuple into a single payload.
     fn encode_tuple(&self, tuple: &Tuple) -> Result<Vec<u8>, EncodeError>;
+    /// Whether this encoder supports streaming aggregation.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    /// Start a streaming session if supported.
+    fn start_stream(&self) -> Option<Box<dyn CollectionEncoderStream>> {
+        None
+    }
+}
+
+/// Stateful encoder stream used for incremental encoding.
+pub trait CollectionEncoderStream: Send {
+    /// Append a tuple into the stream buffer.
+    fn append(&mut self, tuple: &Tuple) -> Result<(), EncodeError>;
+    /// Append an entire collection by iterating its rows.
+    fn append_collection(&mut self, collection: &dyn Collection) -> Result<(), EncodeError> {
+        for tuple in collection.rows() {
+            self.append(tuple)?;
+        }
+        Ok(())
+    }
+    /// Finalize the stream and emit the payload.
+    fn finish(self: Box<Self>) -> Result<Vec<u8>, EncodeError>;
 }
 
 /// Encoder that emits the entire collection as a JSON array of row objects.
@@ -71,6 +94,30 @@ impl CollectionEncoder for JsonEncoder {
 
     fn encode_tuple(&self, tuple: &Tuple) -> Result<Vec<u8>, EncodeError> {
         self.encode_tuple_impl(tuple)
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn start_stream(&self) -> Option<Box<dyn CollectionEncoderStream>> {
+        Some(Box::new(JsonStreamingEncoder::default()))
+    }
+}
+
+#[derive(Default)]
+struct JsonStreamingEncoder {
+    rows: Vec<JsonValue>,
+}
+
+impl CollectionEncoderStream for JsonStreamingEncoder {
+    fn append(&mut self, tuple: &Tuple) -> Result<(), EncodeError> {
+        self.rows.push(tuple_to_json(tuple));
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Result<Vec<u8>, EncodeError> {
+        serde_json::to_vec(&JsonValue::Array(self.rows)).map_err(EncodeError::Serialization)
     }
 }
 
@@ -170,5 +217,57 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         assert_eq!(json, serde_json::json!({"amount":5, "status":"ok"}));
+    }
+
+    #[test]
+    fn json_encoder_streaming() {
+        let encoder = JsonEncoder::new("json");
+        assert!(
+            encoder.supports_streaming(),
+            "json encoder should be streaming"
+        );
+        let mut stream = encoder.start_stream().expect("stream");
+
+        let batch1 = batch_from_columns_simple(vec![
+            (
+                "orders".to_string(),
+                "amount".to_string(),
+                vec![Value::Int64(1)],
+            ),
+            (
+                "orders".to_string(),
+                "status".to_string(),
+                vec![Value::String("ok".to_string())],
+            ),
+        ])
+        .expect("batch1");
+        stream.append_collection(&batch1).expect("append batch1");
+
+        let batch2 = batch_from_columns_simple(vec![
+            (
+                "orders".to_string(),
+                "amount".to_string(),
+                vec![Value::Int64(2)],
+            ),
+            (
+                "orders".to_string(),
+                "status".to_string(),
+                vec![Value::String("fail".to_string())],
+            ),
+        ])
+        .expect("batch2");
+        for tuple in batch2.rows() {
+            stream.append(tuple).expect("stream append");
+        }
+
+        let payload = stream.finish().expect("stream finish");
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"amount":1, "status":"ok"},
+                {"amount":2, "status":"fail"}
+            ])
+        );
     }
 }
