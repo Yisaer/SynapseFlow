@@ -8,8 +8,8 @@
 
 use crate::codec::encoder::CollectionEncoder;
 use crate::processor::base::{
-    fan_in_control_streams, fan_in_streams, forward_error, log_received_data, send_control_with_backpressure,
-    send_with_backpressure, DEFAULT_CHANNEL_CAPACITY,
+    fan_in_control_streams, fan_in_streams, forward_error, log_received_data,
+    send_control_with_backpressure, send_with_backpressure, DEFAULT_CHANNEL_CAPACITY,
 };
 use crate::processor::{ControlSignal, Processor, ProcessorError, StreamData};
 use futures::stream::StreamExt;

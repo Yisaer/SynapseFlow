@@ -12,8 +12,11 @@ pub(crate) static SOURCE_TOPIC: &str = "/yisa/data";
 pub(crate) static SINK_TOPIC: &str = "/yisa/data2";
 pub(crate) static MQTT_QOS: u8 = 0;
 
-pub async fn start_server(addr: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = AppState::new();
+pub async fn start_server(
+    addr: String,
+    instance: flow::FlowInstance,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let state = AppState::with_instance(instance);
 
     let app = Router::new()
         .route(

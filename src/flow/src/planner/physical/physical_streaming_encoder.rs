@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::PhysicalPlan;
 
 /// Physical node representing a streaming encoder stage that also handles batching.
-/// 
+///
 /// Note: connector_id has been removed as it's not needed for processor identification.
 /// Processor IDs are now generated using only sink_id and physical_plan_name.
 #[derive(Clone)]

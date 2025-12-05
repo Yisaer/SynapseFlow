@@ -32,8 +32,10 @@ pub struct ResultCollectProcessor {
 impl ResultCollectProcessor {
     /// Create a new ResultCollectProcessor
     pub fn new(id: impl Into<String>) -> Self {
-        let (broadcast_output, _) = broadcast::channel(crate::processor::base::DEFAULT_CHANNEL_CAPACITY);
-        let (broadcast_control_output, _) = broadcast::channel(crate::processor::base::DEFAULT_CHANNEL_CAPACITY);
+        let (broadcast_output, _) =
+            broadcast::channel(crate::processor::base::DEFAULT_CHANNEL_CAPACITY);
+        let (broadcast_control_output, _) =
+            broadcast::channel(crate::processor::base::DEFAULT_CHANNEL_CAPACITY);
         Self {
             id: id.into(),
             inputs: Vec::new(),

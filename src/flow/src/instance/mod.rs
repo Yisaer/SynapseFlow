@@ -1,0 +1,273 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use crate::catalog::{Catalog, CatalogError, StreamDefinition, StreamProps};
+use crate::connector::{
+    ConnectorError, MqttClientManager, MqttSourceConfig, MqttSourceConnector,
+    SharedMqttClientConfig,
+};
+use crate::pipeline::{PipelineDefinition, PipelineError, PipelineManager, PipelineSnapshot};
+use crate::processor::ProcessorPipeline;
+use crate::shared_stream::{
+    registry as shared_stream_registry, SharedStreamConfig, SharedStreamError, SharedStreamInfo,
+    SharedStreamRegistry,
+};
+use crate::{create_pipeline, create_pipeline_with_log_sink};
+use crate::{JsonDecoder, PipelineSink};
+
+/// Runtime container that manages all Flow resources (streams, pipelines, shared clients).
+#[derive(Clone)]
+pub struct FlowInstance {
+    catalog: Arc<Catalog>,
+    shared_stream_registry: &'static SharedStreamRegistry,
+    pipeline_manager: Arc<PipelineManager>,
+    shared_mqtt_clients: Arc<Mutex<HashMap<String, SharedMqttClientConfig>>>,
+    mqtt_client_manager: MqttClientManager,
+}
+
+impl FlowInstance {
+    /// Create a new Flow instance backed by global registries.
+    pub fn new() -> Self {
+        let catalog = Arc::new(Catalog::new());
+        let shared_stream_registry = shared_stream_registry();
+        let mqtt_client_manager = MqttClientManager::new();
+        let pipeline_manager = Arc::new(PipelineManager::new(
+            Arc::clone(&catalog),
+            shared_stream_registry,
+            mqtt_client_manager.clone(),
+        ));
+        Self {
+            catalog,
+            shared_stream_registry,
+            pipeline_manager,
+            shared_mqtt_clients: Arc::new(Mutex::new(HashMap::new())),
+            mqtt_client_manager,
+        }
+    }
+
+    /// Create a stream definition and optionally attach a shared stream runtime.
+    pub async fn create_stream(
+        &self,
+        definition: StreamDefinition,
+        shared: bool,
+    ) -> Result<StreamRuntimeInfo, FlowInstanceError> {
+        let stored = self.catalog.insert(definition)?;
+        let shared_info = if shared {
+            match self.ensure_shared_stream(stored.clone()).await {
+                Ok(info) => Some(info),
+                Err(err) => {
+                    let _ = self.catalog.remove(stored.id());
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
+        Ok(StreamRuntimeInfo {
+            definition: stored,
+            shared_info,
+        })
+    }
+
+    /// Retrieve a stream definition and its shared runtime (if any).
+    pub async fn get_stream(&self, name: &str) -> Result<StreamRuntimeInfo, FlowInstanceError> {
+        let definition = self
+            .catalog
+            .get(name)
+            .ok_or_else(|| CatalogError::NotFound(name.to_string()))?;
+        let shared_info = match self.shared_stream_registry.get_stream(name).await {
+            Ok(info) => Some(info),
+            Err(SharedStreamError::NotFound(_)) => None,
+            Err(err) => return Err(err.into()),
+        };
+        Ok(StreamRuntimeInfo {
+            definition,
+            shared_info,
+        })
+    }
+
+    /// List all streams with their shared runtime metadata.
+    pub async fn list_streams(&self) -> Result<Vec<StreamRuntimeInfo>, FlowInstanceError> {
+        let shared_infos = self.shared_stream_registry.list_streams().await;
+        let shared_map: HashMap<String, SharedStreamInfo> = shared_infos
+            .into_iter()
+            .map(|info| (info.name.clone(), info))
+            .collect();
+
+        let mut payload = Vec::new();
+        for definition in self.catalog.list() {
+            let shared_info = shared_map.get(definition.id()).cloned();
+            payload.push(StreamRuntimeInfo {
+                definition,
+                shared_info,
+            });
+        }
+        Ok(payload)
+    }
+
+    /// Delete a stream definition and its shared runtime (if registered).
+    pub async fn delete_stream(&self, name: &str) -> Result<(), FlowInstanceError> {
+        if self.shared_stream_registry.is_registered(name).await {
+            self.shared_stream_registry.drop_stream(name).await?;
+        }
+        self.catalog.remove(name)?;
+        Ok(())
+    }
+
+    /// Register a shared MQTT client that can be referenced by connector keys.
+    pub async fn create_shared_mqtt_client(
+        &self,
+        config: SharedMqttClientConfig,
+    ) -> Result<(), FlowInstanceError> {
+        self.mqtt_client_manager
+            .create_client(config.clone())
+            .await?;
+        self.shared_mqtt_clients
+            .lock()
+            .expect("shared mqtt map poisoned")
+            .insert(config.key.clone(), config);
+        Ok(())
+    }
+
+    /// Drop a shared MQTT client identified by key.
+    pub fn drop_shared_mqtt_client(&self, key: &str) -> Result<(), FlowInstanceError> {
+        self.mqtt_client_manager.drop_client(key)?;
+        self.shared_mqtt_clients
+            .lock()
+            .expect("shared mqtt map poisoned")
+            .remove(key);
+        Ok(())
+    }
+
+    /// List metadata for registered shared MQTT clients.
+    pub fn list_shared_mqtt_clients(&self) -> Vec<SharedMqttClientConfig> {
+        self.shared_mqtt_clients
+            .lock()
+            .expect("shared mqtt map poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Fetch metadata for a single shared MQTT client.
+    pub fn get_shared_mqtt_client(&self, key: &str) -> Option<SharedMqttClientConfig> {
+        self.shared_mqtt_clients
+            .lock()
+            .expect("shared mqtt map poisoned")
+            .get(key)
+            .cloned()
+    }
+
+    /// Create a pipeline runtime from definition.
+    pub fn create_pipeline(
+        &self,
+        definition: PipelineDefinition,
+    ) -> Result<PipelineSnapshot, PipelineError> {
+        self.pipeline_manager.create_pipeline(definition)
+    }
+
+    /// Start a pipeline by identifier.
+    pub fn start_pipeline(&self, id: &str) -> Result<(), PipelineError> {
+        self.pipeline_manager.start_pipeline(id)
+    }
+
+    /// Stop and delete a pipeline.
+    pub async fn delete_pipeline(&self, id: &str) -> Result<(), PipelineError> {
+        self.pipeline_manager.delete_pipeline(id).await
+    }
+
+    /// Retrieve pipeline snapshots.
+    pub fn list_pipelines(&self) -> Vec<PipelineSnapshot> {
+        self.pipeline_manager.list()
+    }
+
+    /// Build a processor pipeline directly without registering it.
+    pub fn build_pipeline(
+        &self,
+        sql: &str,
+        sinks: Vec<PipelineSink>,
+    ) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
+        create_pipeline(
+            sql,
+            sinks,
+            &self.catalog,
+            self.shared_stream_registry,
+            self.mqtt_client_manager.clone(),
+        )
+    }
+
+    /// Build a processor pipeline wired to a default logging sink.
+    pub fn build_pipeline_with_log_sink(
+        &self,
+        sql: &str,
+        forward_to_result: bool,
+    ) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
+        create_pipeline_with_log_sink(
+            sql,
+            forward_to_result,
+            &self.catalog,
+            self.shared_stream_registry,
+            self.mqtt_client_manager.clone(),
+        )
+    }
+
+    async fn ensure_shared_stream(
+        &self,
+        definition: Arc<StreamDefinition>,
+    ) -> Result<SharedStreamInfo, FlowInstanceError> {
+        match definition.props() {
+            StreamProps::Mqtt(props) => {
+                let mut config = SharedStreamConfig::new(definition.id(), definition.schema());
+                let mut source_config = MqttSourceConfig::new(
+                    format!("{}_shared_source", definition.id()),
+                    props.broker_url.clone(),
+                    props.topic.clone(),
+                    props.qos,
+                );
+                if let Some(client_id) = &props.client_id {
+                    source_config = source_config.with_client_id(client_id.clone());
+                }
+                if let Some(connector_key) = &props.connector_key {
+                    source_config = source_config.with_connector_key(connector_key.clone());
+                }
+                let connector = MqttSourceConnector::new(
+                    format!("{}_shared_source_connector", definition.id()),
+                    source_config,
+                    self.mqtt_client_manager.clone(),
+                );
+                let decoder = Arc::new(JsonDecoder::new(definition.id(), definition.schema()));
+                config.set_connector(Box::new(connector), decoder);
+                self.shared_stream_registry
+                    .create_stream(config)
+                    .await
+                    .map_err(FlowInstanceError::from)
+            }
+        }
+    }
+}
+
+impl Default for FlowInstance {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Combined runtime view for a catalog stream and its shared stream state.
+#[derive(Clone)]
+pub struct StreamRuntimeInfo {
+    pub definition: Arc<StreamDefinition>,
+    pub shared_info: Option<SharedStreamInfo>,
+}
+
+/// Errors surfaced by FlowInstance APIs.
+#[derive(thiserror::Error, Debug)]
+pub enum FlowInstanceError {
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
+    #[error(transparent)]
+    SharedStream(#[from] SharedStreamError),
+    #[error(transparent)]
+    Connector(#[from] ConnectorError),
+    #[error("{0}")]
+    Invalid(String),
+}

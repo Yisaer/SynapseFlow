@@ -31,7 +31,7 @@ impl fmt::Debug for PhysicalDataSink {
 }
 
 /// Declarative description of a sink connector bound to an encoder node.
-/// 
+///
 /// Note: connector_id has been removed as it's not needed for processor identification.
 /// Processor IDs are now generated using only sink_id and physical_plan_name.
 #[derive(Clone)]

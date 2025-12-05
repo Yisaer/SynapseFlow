@@ -6,19 +6,11 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use flow::catalog::global_catalog;
-use flow::shared_stream::{
-    SharedStreamConfig, SharedStreamError, SharedStreamInfo, SharedStreamStatus,
-    registry as shared_stream_registry,
-};
-use flow::{
-    JsonDecoder, Schema, StreamDefinition, StreamProps,
-    catalog::MqttStreamProps,
-    connector::{MqttSourceConfig, MqttSourceConnector},
-};
+use flow::catalog::{CatalogError, MqttStreamProps};
+use flow::shared_stream::{SharedStreamError, SharedStreamInfo, SharedStreamStatus};
+use flow::{FlowInstanceError, Schema, StreamDefinition, StreamProps, StreamRuntimeInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -111,7 +103,10 @@ pub struct SharedStreamItem {
     pub created_at_secs: u64,
 }
 
-pub async fn create_stream_handler(Json(req): Json<CreateStreamRequest>) -> impl IntoResponse {
+pub async fn create_stream_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateStreamRequest>,
+) -> impl IntoResponse {
     if req.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -139,55 +134,26 @@ pub async fn create_stream_handler(Json(req): Json<CreateStreamRequest>) -> impl
 
     let definition = StreamDefinition::new(req.name.clone(), Arc::new(schema), stream_props);
 
-    let catalog = global_catalog();
-    let stored_definition = match catalog.insert(definition) {
-        Ok(def) => def,
-        Err(err) => {
-            return (
-                StatusCode::CONFLICT,
-                format!("failed to create stream: {}", err),
-            )
-                .into_response();
+    match state.instance.create_stream(definition, req.shared).await {
+        Ok(info) => {
+            println!("[manager] stream {} created", req.name);
+            (StatusCode::CREATED, Json(build_stream_info(info))).into_response()
         }
-    };
-
-    let mut shared_stream_runtime = None;
-    if req.shared {
-        match create_shared_stream(&stored_definition).await {
-            Ok(info) => shared_stream_runtime = Some(info),
-            Err(err) => {
-                let _ = catalog.remove(&req.name);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("failed to enable shared stream: {err}"),
-                )
-                    .into_response();
-            }
-        }
+        Err(err) => map_flow_instance_error(err),
     }
-
-    println!("[manager] stream {} created", req.name);
-    let response = build_stream_info(stored_definition, shared_stream_runtime);
-    (StatusCode::CREATED, Json(response)).into_response()
 }
 
-pub async fn list_streams() -> impl IntoResponse {
-    let catalog = global_catalog();
-    let streams = catalog.list();
-    let shared_infos = shared_stream_registry().list_streams().await;
-    let shared_map: HashMap<String, SharedStreamInfo> = shared_infos
-        .into_iter()
-        .map(|info| (info.name.clone(), info))
-        .collect();
-
-    let mut payload = Vec::with_capacity(streams.len());
-    for definition in streams {
-        let shared_item = shared_map
-            .get(definition.id())
-            .map(|info| into_shared_stream_item(info.clone()));
-        payload.push(build_stream_info(definition, shared_item));
+pub async fn list_streams(State(state): State<AppState>) -> impl IntoResponse {
+    match state.instance.list_streams().await {
+        Ok(streams) => {
+            let payload = streams
+                .into_iter()
+                .map(build_stream_info)
+                .collect::<Vec<_>>();
+            Json(payload).into_response()
+        }
+        Err(err) => map_flow_instance_error(err),
     }
-    Json(payload)
 }
 
 pub async fn delete_stream_handler(
@@ -195,8 +161,8 @@ pub async fn delete_stream_handler(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let pipelines_using_stream = state
-        .pipeline_manager
-        .list()
+        .instance
+        .list_pipelines()
         .into_iter()
         .filter(|snapshot| snapshot.streams.iter().any(|stream| stream == &name))
         .map(|snapshot| snapshot.definition.id().to_string())
@@ -212,79 +178,17 @@ pub async fn delete_stream_handler(
             .into_response();
     }
 
-    match shared_stream_registry().drop_stream(&name).await {
-        Ok(_) | Err(SharedStreamError::NotFound(_)) => {}
-        Err(SharedStreamError::InUse(consumers)) => {
-            return (
-                StatusCode::CONFLICT,
-                format!(
-                    "shared stream {name} still referenced by pipelines: {}",
-                    consumers.join(", ")
-                ),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to delete shared stream {name}: {err}"),
-            )
-                .into_response();
-        }
-    }
-
-    let catalog = global_catalog();
-    match catalog.remove(&name) {
+    match state.instance.delete_stream(&name).await {
         Ok(_) => (StatusCode::OK, format!("stream {name} deleted")).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, format!("stream {name} not found")).into_response(),
+        Err(err) => map_flow_instance_error(err),
     }
 }
 
-async fn create_shared_stream(
-    definition: &Arc<StreamDefinition>,
-) -> Result<SharedStreamItem, String> {
-    let schema = definition.schema();
-    let mut config = SharedStreamConfig::new(definition.id().to_string(), schema);
-    match definition.props() {
-        StreamProps::Mqtt(props) => {
-            let mut source_config = MqttSourceConfig::new(
-                definition.id().to_string(),
-                props.broker_url.clone(),
-                props.topic.clone(),
-                props.qos,
-            );
-            if let Some(client_id) = &props.client_id {
-                source_config = source_config.with_client_id(client_id.clone());
-            }
-            if let Some(connector_key) = &props.connector_key {
-                source_config = source_config.with_connector_key(connector_key.clone());
-            }
-            let connector = MqttSourceConnector::new(
-                format!("{}_shared_source_connector", definition.id()),
-                source_config,
-            );
-            let decoder = Arc::new(JsonDecoder::new(
-                definition.id().to_string(),
-                config.schema.clone(),
-            ));
-            config.set_connector(Box::new(connector), decoder);
-        }
-    }
-
-    shared_stream_registry()
-        .create_stream(config)
-        .await
-        .map(into_shared_stream_item)
-        .map_err(|err| err.to_string())
-}
-
-fn build_stream_info(
-    definition: Arc<StreamDefinition>,
-    shared_item: Option<SharedStreamItem>,
-) -> StreamInfo {
-    let schema = definition.schema();
+fn build_stream_info(info: StreamRuntimeInfo) -> StreamInfo {
+    let schema = info.definition.schema();
+    let shared_item = info.shared_info.map(into_shared_stream_item);
     StreamInfo {
-        name: definition.id().to_string(),
+        name: info.definition.id().to_string(),
         shared: shared_item.is_some(),
         schema: StreamSchemaInfo {
             columns: schema
@@ -295,6 +199,32 @@ fn build_stream_info(
         },
         shared_stream: shared_item,
     }
+}
+
+fn map_flow_instance_error(err: FlowInstanceError) -> axum::response::Response {
+    let (status, message) = match err {
+        FlowInstanceError::Catalog(CatalogError::AlreadyExists(name)) => (
+            StatusCode::CONFLICT,
+            format!("stream {name} already exists"),
+        ),
+        FlowInstanceError::Catalog(CatalogError::NotFound(name)) => {
+            (StatusCode::NOT_FOUND, format!("stream {name} not found"))
+        }
+        FlowInstanceError::SharedStream(SharedStreamError::InUse(consumers)) => (
+            StatusCode::CONFLICT,
+            format!(
+                "shared stream still referenced by pipelines: {}",
+                consumers.join(", ")
+            ),
+        ),
+        FlowInstanceError::SharedStream(SharedStreamError::NotFound(name)) => (
+            StatusCode::NOT_FOUND,
+            format!("shared stream {name} not found"),
+        ),
+        other => (StatusCode::BAD_REQUEST, other.to_string()),
+    };
+
+    (status, message).into_response()
 }
 
 fn stream_column_info(name: &str, datatype: &ConcreteDatatype) -> StreamColumnInfo {

@@ -5,9 +5,10 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use flow::FlowInstance;
 use flow::pipeline::{
-    MqttSinkProps, PipelineDefinition, PipelineError, PipelineManager, PipelineStatus,
-    SinkDefinition, SinkProps, SinkType,
+    MqttSinkProps, PipelineDefinition, PipelineError, PipelineStatus, SinkDefinition, SinkProps,
+    SinkType,
 };
 use flow::planner::sink::CommonSinkProps;
 use serde::{Deserialize, Serialize};
@@ -17,13 +18,13 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pipeline_manager: Arc<PipelineManager>,
+    pub instance: Arc<FlowInstance>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn with_instance(instance: FlowInstance) -> Self {
         Self {
-            pipeline_manager: Arc::new(PipelineManager::new()),
+            instance: Arc::new(instance),
         }
     }
 }
@@ -113,7 +114,7 @@ pub async fn create_pipeline_handler(
         Ok(def) => def,
         Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
     };
-    match state.pipeline_manager.create_pipeline(definition) {
+    match state.instance.create_pipeline(definition) {
         Ok(snapshot) => {
             println!("[manager] pipeline {} created", snapshot.definition.id());
             (
@@ -142,7 +143,7 @@ pub async fn start_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.pipeline_manager.start_pipeline(&id) {
+    match state.instance.start_pipeline(&id) {
         Ok(_) => {
             println!("[manager] pipeline {} started", id);
             (StatusCode::OK, format!("pipeline {id} started")).into_response()
@@ -162,7 +163,7 @@ pub async fn delete_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.pipeline_manager.delete_pipeline(&id).await {
+    match state.instance.delete_pipeline(&id).await {
         Ok(_) => (StatusCode::OK, format!("pipeline {id} deleted")).into_response(),
         Err(PipelineError::NotFound(_)) => {
             (StatusCode::NOT_FOUND, format!("pipeline {id} not found")).into_response()
@@ -177,8 +178,8 @@ pub async fn delete_pipeline_handler(
 
 pub async fn list_pipelines(State(state): State<AppState>) -> impl IntoResponse {
     let list = state
-        .pipeline_manager
-        .list()
+        .instance
+        .list_pipelines()
         .into_iter()
         .map(|snapshot| ListPipelineItem {
             id: snapshot.definition.id().to_string(),

@@ -10,8 +10,8 @@ use crate::planner::logical::{
 use crate::planner::physical::physical_project::PhysicalProjectField;
 use crate::planner::physical::{
     PhysicalBatch, PhysicalDataSink, PhysicalDataSource, PhysicalEncoder, PhysicalFilter,
-    PhysicalPlan, PhysicalProject, PhysicalResultCollect, PhysicalSharedStream, PhysicalSinkConnector,
-    PhysicalStreamingEncoder,
+    PhysicalPlan, PhysicalProject, PhysicalResultCollect, PhysicalSharedStream,
+    PhysicalSinkConnector, PhysicalStreamingEncoder,
 };
 use crate::planner::sink::{PipelineSink, PipelineSinkConnector};
 use std::sync::Arc;
@@ -93,17 +93,23 @@ fn create_physical_plan_with_builder_cached(
     builder: &mut PhysicalPlanBuilder,
 ) -> Result<Arc<PhysicalPlan>, String> {
     let logical_index = logical_plan.get_plan_index();
-    
+
     // Check if this logical node has already been converted using builder's cache
     if let Some(cached_physical) = builder.get_cached_node(logical_index) {
         return Ok(cached_physical);
     }
-    
+
     // Create the physical node
     let physical_plan = match logical_plan.as_ref() {
         LogicalPlan::DataSource(logical_ds) => {
             let index = builder.allocate_index();
-            create_physical_data_source_with_builder(logical_ds, &logical_plan, index, bindings, builder)?
+            create_physical_data_source_with_builder(
+                logical_ds,
+                &logical_plan,
+                index,
+                bindings,
+                builder,
+            )?
         }
         LogicalPlan::Filter(logical_filter) => create_physical_filter_with_builder_cached(
             logical_filter,
@@ -126,15 +132,18 @@ fn create_physical_plan_with_builder_cached(
         LogicalPlan::Tail(_logical_tail) => {
             // TailPlan is no longer used in new design, but handle it for backward compatibility
             // Convert to multiple DataSink nodes under a ResultCollect
-            create_physical_result_collect_from_tail_with_builder_cached(&logical_plan, bindings, builder)?
+            create_physical_result_collect_from_tail_with_builder_cached(
+                &logical_plan,
+                bindings,
+                builder,
+            )?
         }
     };
-    
+
     // Cache the result for future reuse using builder's cache
     builder.cache_node(logical_index, Arc::clone(&physical_plan));
     Ok(physical_plan)
 }
-
 
 /// Create a PhysicalResultCollect from a TailPlan using centralized index management with caching
 fn create_physical_result_collect_from_tail_with_builder_cached(
@@ -145,14 +154,15 @@ fn create_physical_result_collect_from_tail_with_builder_cached(
     // Convert children first using the builder with caching
     let mut physical_children = Vec::new();
     for child in logical_plan.children() {
-        let physical_child = create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
+        let physical_child =
+            create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
         physical_children.push(physical_child);
     }
-    
+
     if physical_children.is_empty() {
         return Err("TailPlan must have at least one child".to_string());
     }
-    
+
     // Always create ResultCollect to ensure consistent pipeline structure
     // This ensures that processor pipeline building works correctly
     let result_collect_index = builder.allocate_index();
@@ -202,7 +212,8 @@ fn create_physical_filter_with_builder_cached(
     // Convert children first using the builder with caching
     let mut physical_children = Vec::new();
     for child in logical_plan.children() {
-        let physical_child = create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
+        let physical_child =
+            create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
         physical_children.push(physical_child);
     }
 
@@ -235,7 +246,8 @@ fn create_physical_project_with_builder_cached(
     // Convert children first using the builder with caching
     let mut physical_children = Vec::new();
     for child in logical_plan.children() {
-        let physical_child = create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
+        let physical_child =
+            create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
         physical_children.push(physical_child);
     }
 
@@ -265,7 +277,8 @@ fn create_physical_data_sink_with_builder_cached(
     // Convert children first using the builder with caching
     let mut physical_children = Vec::new();
     for child in logical_plan.children() {
-        let physical_child = create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
+        let physical_child =
+            create_physical_plan_with_builder_cached(child.clone(), bindings, builder)?;
         physical_children.push(physical_child);
     }
     if physical_children.len() != 1 {
@@ -274,7 +287,8 @@ fn create_physical_data_sink_with_builder_cached(
 
     let input_child = Arc::clone(&physical_children[0]);
     let sink_index = builder.allocate_index();
-    let (encoded_child, connector) = build_sink_chain_with_builder(&logical_sink.sink, &input_child, builder)?;
+    let (encoded_child, connector) =
+        build_sink_chain_with_builder(&logical_sink.sink, &input_child, builder)?;
     let physical_sink = PhysicalDataSink::new(encoded_child, sink_index, connector);
     Ok(Arc::new(PhysicalPlan::DataSink(physical_sink)))
 }
@@ -368,7 +382,7 @@ fn add_streaming_encoder_with_builder(
         sink.common.clone(),
     );
     encoder_children.push(Arc::new(PhysicalPlan::StreamingEncoder(streaming)));
-    
+
     let connector_index = builder.allocate_index();
     connectors.push(PhysicalSinkConnector::new(
         sink.sink_id.clone(),
@@ -442,7 +456,7 @@ mod tests {
         let mut builder = PhysicalPlanBuilder::new();
         let index1 = builder.allocate_index();
         let index2 = builder.allocate_index();
-        
+
         assert_eq!(index1, 0);
         assert_eq!(index2, 1);
     }

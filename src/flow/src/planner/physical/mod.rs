@@ -7,9 +7,9 @@ pub mod physical_data_source;
 pub mod physical_encoder;
 pub mod physical_filter;
 pub mod physical_project;
+pub mod physical_result_collect;
 pub mod physical_shared_stream;
 pub mod physical_streaming_encoder;
-pub mod physical_result_collect;
 
 pub use base_physical::BasePhysicalPlan;
 pub use physical_batch::PhysicalBatch;
@@ -18,9 +18,9 @@ pub use physical_data_source::PhysicalDataSource;
 pub use physical_encoder::PhysicalEncoder;
 pub use physical_filter::PhysicalFilter;
 pub use physical_project::{PhysicalProject, PhysicalProjectField};
+pub use physical_result_collect::PhysicalResultCollect;
 pub use physical_shared_stream::PhysicalSharedStream;
 pub use physical_streaming_encoder::PhysicalStreamingEncoder;
-pub use physical_result_collect::PhysicalResultCollect;
 
 /// Enum describing all supported physical execution nodes
 #[derive(Debug, Clone)]
@@ -90,8 +90,13 @@ impl PhysicalPlan {
     /// Print the topology structure of this physical plan for debugging
     pub fn print_topology(&self, indent: usize) {
         let spacing = "  ".repeat(indent);
-        println!("{}{} (index: {})", spacing, self.get_plan_type(), self.get_plan_index());
-        
+        println!(
+            "{}{} (index: {})",
+            spacing,
+            self.get_plan_type(),
+            self.get_plan_index()
+        );
+
         for child in self.children() {
             child.print_topology(indent + 1);
         }

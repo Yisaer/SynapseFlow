@@ -20,6 +20,7 @@ pprof = { version = "0.6.1", features = ["flamegraph", "protobuf"], optional = t
 tikv-jemallocator = { version = "0.6.0", features = ["profiling"], optional = true }
 tikv-jemalloc-ctl = { version = "0.6.0", features = ["stats"], optional = true }
 manager = { path = "src/manager" }
+flow = { path = "src/flow" }
 telemetry = { path = "src/telemetry", optional = true }
 
 [features]

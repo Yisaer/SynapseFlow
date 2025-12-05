@@ -17,6 +17,7 @@ fn log_allocator() {
     println!("[synapse-flow] global allocator: system default");
 }
 
+use flow::FlowInstance;
 #[cfg(feature = "profiling")]
 use pprof::{protos::Message, ProfilerGuard};
 use std::env;
@@ -97,8 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let manager_addr = env::var("MANAGER_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let instance = FlowInstance::new();
     println!("Starting manager on {}", manager_addr);
-    let manager_future = manager::start_server(manager_addr.clone());
+    let manager_future = manager::start_server(manager_addr.clone(), instance);
 
     tokio::select! {
         result = manager_future => {

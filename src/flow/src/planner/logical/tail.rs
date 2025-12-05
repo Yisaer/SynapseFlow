@@ -1,7 +1,7 @@
 use super::BaseLogicalPlan;
+use super::LogicalPlan;
 use std::fmt;
 use std::sync::Arc;
-use super::LogicalPlan;
 
 /// Logical plan node that represents the tail/end of a plan with multiple sinks.
 /// This node acts as a collection point for multiple DataSinkPlan children,

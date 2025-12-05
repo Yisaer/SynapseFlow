@@ -15,7 +15,11 @@ use tokio_stream::wrappers::BroadcastStream;
 pub fn log_received_data(processor_id: &str, data: &StreamData) {
     match data {
         StreamData::Collection(collection) => {
-            println!("[Processor:{}] received Collection: {} rows", processor_id, collection.num_rows());
+            println!(
+                "[Processor:{}] received Collection: {} rows",
+                processor_id,
+                collection.num_rows()
+            );
             // Print first few rows for debugging
             let rows = collection.rows();
             for (i, row) in rows.iter().take(3).enumerate() {
@@ -25,17 +29,35 @@ pub fn log_received_data(processor_id: &str, data: &StreamData) {
                 println!("  ... and {} more rows", rows.len() - 3);
             }
         }
-        StreamData::Encoded { payload, collection } => {
-            println!("[Processor:{}] received Encoded: {} rows, {} bytes", processor_id, collection.num_rows(), payload.len());
+        StreamData::Encoded {
+            payload,
+            collection,
+        } => {
+            println!(
+                "[Processor:{}] received Encoded: {} rows, {} bytes",
+                processor_id,
+                collection.num_rows(),
+                payload.len()
+            );
         }
         StreamData::Bytes(payload) => {
-            println!("[Processor:{}] received Bytes: {} bytes", processor_id, payload.len());
+            println!(
+                "[Processor:{}] received Bytes: {} bytes",
+                processor_id,
+                payload.len()
+            );
         }
         StreamData::Control(signal) => {
-            println!("[Processor:{}] received Control: {:?}", processor_id, signal);
+            println!(
+                "[Processor:{}] received Control: {:?}",
+                processor_id, signal
+            );
         }
         StreamData::Error(error) => {
-            println!("[Processor:{}] received Error: {}", processor_id, error.message);
+            println!(
+                "[Processor:{}] received Error: {}",
+                processor_id, error.message
+            );
         }
     }
 }

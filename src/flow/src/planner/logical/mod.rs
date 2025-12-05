@@ -1,10 +1,10 @@
 use parser::SelectStmt;
 use std::sync::Arc;
 
-pub mod sink;
 pub mod datasource;
 pub mod filter;
 pub mod project;
+pub mod sink;
 pub mod tail;
 
 use crate::planner::sink::PipelineSink;
@@ -82,7 +82,12 @@ impl LogicalPlan {
     /// Print logical topology (similar to PhysicalPlan::print_topology)
     pub fn print_topology(&self, indent: usize) {
         let spacing = "  ".repeat(indent);
-        println!("{}{} (index: {})", spacing, self.get_plan_type(), self.get_plan_index());
+        println!(
+            "{}{} (index: {})",
+            spacing,
+            self.get_plan_type(),
+            self.get_plan_index()
+        );
 
         for child in self.children() {
             child.print_topology(indent + 1);
@@ -162,7 +167,7 @@ pub fn create_logical_plan(
         let next_index = max_plan_index(&base) + 1;
         let mut sink_children = Vec::new();
         let sink_count = sinks.len();
-        
+
         for (idx, sink) in sinks.into_iter().enumerate() {
             let sink_index = next_index + idx as i64;
             let sink_plan = DataSinkPlan::new(Arc::clone(&base), sink_index, sink);
@@ -296,7 +301,9 @@ mod logical_plan_tests {
             crate::planner::sink::PipelineSinkConnector::new(
                 "test_conn",
                 crate::planner::sink::SinkConnectorConfig::Nop(Default::default()),
-                crate::planner::sink::SinkEncoderConfig::Json { encoder_id: "test".to_string() },
+                crate::planner::sink::SinkEncoderConfig::Json {
+                    encoder_id: "test".to_string(),
+                },
             ),
         );
 
@@ -309,12 +316,12 @@ mod logical_plan_tests {
 
         // Should be a Tail node (single sink now creates TailPlan for consistency)
         assert_eq!(plan.get_plan_type(), "Tail");
-        
+
         // Check that it has one child (DataSink)
         let children = plan.children();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].get_plan_type(), "DataSink");
-        
+
         // Check that DataSink has Project as child
         let sink_children = children[0].children();
         assert_eq!(sink_children.len(), 1);
@@ -331,7 +338,9 @@ mod logical_plan_tests {
             crate::planner::sink::PipelineSinkConnector::new(
                 "conn1",
                 crate::planner::sink::SinkConnectorConfig::Nop(Default::default()),
-                crate::planner::sink::SinkEncoderConfig::Json { encoder_id: "json1".to_string() },
+                crate::planner::sink::SinkEncoderConfig::Json {
+                    encoder_id: "json1".to_string(),
+                },
             ),
         );
 
@@ -340,7 +349,9 @@ mod logical_plan_tests {
             crate::planner::sink::PipelineSinkConnector::new(
                 "conn2",
                 crate::planner::sink::SinkConnectorConfig::Nop(Default::default()),
-                crate::planner::sink::SinkEncoderConfig::Json { encoder_id: "json2".to_string() },
+                crate::planner::sink::SinkEncoderConfig::Json {
+                    encoder_id: "json2".to_string(),
+                },
             ),
         );
 
@@ -348,29 +359,31 @@ mod logical_plan_tests {
 
         // Should be a Tail node (multiple sinks create TailPlan)
         assert_eq!(plan.get_plan_type(), "Tail");
-        
+
         // Check that it has two children (DataSinks)
         let children = plan.children();
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].get_plan_type(), "DataSink");
         assert_eq!(children[1].get_plan_type(), "DataSink");
-        
+
         // Verify each DataSink has Project as child
         for child in children {
             let sink_children = child.children();
             assert_eq!(sink_children.len(), 1);
             assert_eq!(sink_children[0].get_plan_type(), "Project");
         }
-        
+
         // Verify that all DataSinks share the same Project instance
         if let LogicalPlan::Tail(tail_plan) = plan.as_ref() {
-            let data_sink_children: Vec<_> = tail_plan.base.children()
+            let data_sink_children: Vec<_> = tail_plan
+                .base
+                .children()
                 .iter()
                 .filter(|child| matches!(child.as_ref(), LogicalPlan::DataSink(_)))
                 .collect();
-            
+
             assert_eq!(data_sink_children.len(), 2);
-            
+
             // Get the Project node from each DataSink
             let mut project_indices = Vec::new();
             for data_sink_node in &data_sink_children {
@@ -379,12 +392,18 @@ mod logical_plan_tests {
                     project_indices.push(project_child.get_plan_index());
                 }
             }
-            
+
             // All DataSinks should point to the same Project (same index)
             assert_eq!(project_indices.len(), 2);
-            assert_eq!(project_indices[0], project_indices[1], "DataSinks should share the same Project node");
-            
-            println!("✅ Multiple sinks correctly share the same Project node (index: {})", project_indices[0]);
+            assert_eq!(
+                project_indices[0], project_indices[1],
+                "DataSinks should share the same Project node"
+            );
+
+            println!(
+                "✅ Multiple sinks correctly share the same Project node (index: {})",
+                project_indices[0]
+            );
         }
     }
 }
