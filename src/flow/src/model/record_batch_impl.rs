@@ -57,7 +57,8 @@ impl Collection for RecordBatch {
         let mut projected_rows = Vec::with_capacity(self.num_rows());
         for tuple in self.rows() {
             let mut projected_tuple = Tuple::new(Vec::new());
-            let mut partial_messages: HashMap<String, (Vec<Arc<str>>, Vec<Value>)> = HashMap::new();
+            let mut partial_messages: HashMap<String, (Vec<Arc<str>>, Vec<Arc<Value>>)> =
+                HashMap::new();
             let mut projected_messages = Vec::new();
 
             for field in fields {
