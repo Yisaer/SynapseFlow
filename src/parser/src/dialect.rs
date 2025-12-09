@@ -1,11 +1,11 @@
-use sqlparser::ast::{Expr, GroupByExpr, SetExpr, Statement};
+use sqlparser::ast::{GroupByExpr, SetExpr, Statement};
 use sqlparser::parser::ParserError;
 
 use super::window;
-pub use window::{TimeWindow, parse_tumbling_window, window_to_expr};
+pub use window::{Window, parse_window_expr, window_to_expr};
 
-/// Stream processing dialect that supports tumbling window functions
-/// This dialect supports custom window functions like tumblingwindow in GROUP BY clauses
+/// Stream processing dialect that supports window functions in GROUP BY clauses
+/// Currently supports tumblingwindow (time-based) and countwindow (row-count based)
 #[derive(Debug, Clone)]
 pub struct StreamDialect {}
 
@@ -43,66 +43,40 @@ impl sqlparser::dialect::Dialect for StreamDialect {
     }
 }
 
-/// Process a parsed statement to handle tumblingwindow functions
-#[allow(clippy::collapsible_if)]
-pub fn process_tumblingwindow_in_statement(statement: &mut Statement) -> Result<(), ParserError> {
+/// Collect window function present in a parsed statement
+/// Enforces at most one window per statement
+pub fn collect_windows_in_statement(statement: &Statement) -> Result<Option<Window>, ParserError> {
     if let Statement::Query(query) = statement {
-        if let SetExpr::Select(select) = &mut *query.body {
-            // Check if GROUP BY contains tumblingwindow function
-            let new_group_by = parse_group_by_with_tumblingwindow(&select.group_by)?;
-            select.group_by = new_group_by;
+        if let SetExpr::Select(select) = &*query.body {
+            return collect_group_by_windows(&select.group_by);
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
-/// Parse GROUP BY clause and handle tumblingwindow functions
-fn parse_group_by_with_tumblingwindow(group_by: &GroupByExpr) -> Result<GroupByExpr, ParserError> {
+/// Parse GROUP BY clause to extract supported window (if any)
+/// Errors if multiple window functions are present
+pub fn collect_group_by_windows(group_by: &GroupByExpr) -> Result<Option<Window>, ParserError> {
+    let mut found: Option<Window> = None;
+
     match group_by {
         GroupByExpr::Expressions(exprs) => {
-            let mut new_exprs = Vec::new();
-
             for expr in exprs {
-                if let Some(window_expr) = parse_tumblingwindow_expr(expr)? {
-                    // Convert tumblingwindow function to a special window field
-                    new_exprs.push(window_expr);
-                } else {
-                    new_exprs.push(expr.clone());
+                if let Some(window) = parse_window_expr(expr)? {
+                    if found.is_some() {
+                        return Err(ParserError::ParserError(
+                            "Only one window function is allowed in GROUP BY".to_string(),
+                        ));
+                    }
+                    found = Some(window);
                 }
             }
-
-            Ok(GroupByExpr::Expressions(new_exprs))
         }
-        _ => Ok(group_by.clone()),
-    }
-}
+        _ => {}
+    };
 
-/// Parse a tumblingwindow function expressions and convert to window structure
-fn parse_tumblingwindow_expr(expr: &Expr) -> Result<Option<Expr>, ParserError> {
-    if let Expr::Function(function) = expr {
-        let function_name = function.name.to_string().to_lowercase();
-
-        if function_name == "tumblingwindow" {
-            // Parse the tumblingwindow function into a TimeWindow structure
-            match parse_tumbling_window(function) {
-                Ok(window) => {
-                    println!("Successfully parsed tumblingwindow: {:?}", window);
-                    // For now, keep the original expression, but we have the window structure
-                    // In a real implementation, we could replace this with a custom window expression
-                    Ok(Some(expr.clone()))
-                }
-                Err(e) => {
-                    println!("Failed to parse tumblingwindow: {}", e);
-                    Ok(Some(expr.clone()))
-                }
-            }
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(None)
-    }
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -111,55 +85,23 @@ mod tests {
     use sqlparser::parser::Parser;
 
     #[test]
-    fn test_parse_tumblingwindow() {
+    fn parse_single_tumbling_window() {
         let sql = "SELECT * FROM stream GROUP BY tumblingwindow('ss', 10)";
         let dialect = StreamDialect::new();
 
-        let mut statements = Parser::parse_sql(&dialect, sql).unwrap();
+        let statements = Parser::parse_sql(&dialect, sql).unwrap();
         assert_eq!(statements.len(), 1);
 
-        // Process the statement to handle tumblingwindow
-        process_tumblingwindow_in_statement(&mut statements[0]).unwrap();
+        // Collect the windows from GROUP BY
+        let windows = collect_windows_in_statement(&statements[0]).unwrap();
+        assert!(windows.is_some());
 
-        // Verify the statement was processed correctly
-        match &statements[0] {
-            Statement::Query(query) => {
-                if let SetExpr::Select(select) = &*query.body {
-                    // Just verify that we have a GROUP BY clause
-                    if let GroupByExpr::Expressions(exprs) = &select.group_by {
-                        println!("GROUP BY expressions: {:?}", exprs.len());
-                        // Check if any expression is a tumblingwindow function
-                        for expr in exprs {
-                            if let Expr::Function(func) = expr {
-                                if func.name.to_string().to_lowercase() == "tumblingwindow" {
-                                    println!("Found tumblingwindow function in GROUP BY");
-
-                                    // Try to parse it as a TimeWindow
-                                    match parse_tumbling_window(func) {
-                                        Ok(window) => {
-                                            println!(
-                                                "Successfully parsed TimeWindow: {:?}",
-                                                window
-                                            );
-                                            assert_eq!(
-                                                window.window_type,
-                                                window::WindowType::Tumbling
-                                            );
-                                            assert_eq!(window.time_unit, "ss");
-                                            assert_eq!(window.size, 10);
-                                        }
-                                        Err(e) => {
-                                            println!("Failed to parse as TimeWindow: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    println!("Successfully parsed tumblingwindow in GROUP BY");
-                }
-            }
-            _ => panic!("Expected Query statement"),
-        }
+        assert!(matches!(
+            windows.unwrap(),
+            window::Window::Tumbling {
+                ref time_unit,
+                length: 10
+            } if time_unit == "ss"
+        ));
     }
 }
