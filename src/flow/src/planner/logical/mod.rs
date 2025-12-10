@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 pub mod datasource;
 pub mod filter;
+pub mod aggregation;
 pub mod project;
 pub mod sink;
 pub mod tail;
@@ -14,6 +15,7 @@ pub mod window;
 use crate::planner::sink::PipelineSink;
 pub use datasource::DataSource;
 pub use filter::Filter;
+pub use aggregation::Aggregation;
 pub use project::Project;
 pub use sink::DataSinkPlan;
 pub use tail::TailPlan;
@@ -43,6 +45,7 @@ impl BaseLogicalPlan {
 pub enum LogicalPlan {
     DataSource(DataSource),
     Filter(Filter),
+    Aggregation(Aggregation),
     Project(Project),
     DataSink(DataSinkPlan),
     Tail(TailPlan),
@@ -54,6 +57,7 @@ impl LogicalPlan {
         match self {
             LogicalPlan::DataSource(plan) => plan.base.children(),
             LogicalPlan::Filter(plan) => plan.base.children(),
+            LogicalPlan::Aggregation(plan) => plan.base.children(),
             LogicalPlan::Project(plan) => plan.base.children(),
             LogicalPlan::DataSink(plan) => plan.base.children(),
             LogicalPlan::Tail(plan) => plan.base.children(),
@@ -65,6 +69,7 @@ impl LogicalPlan {
         match self {
             LogicalPlan::DataSource(_) => "DataSource",
             LogicalPlan::Filter(_) => "Filter",
+            LogicalPlan::Aggregation(_) => "Aggregation",
             LogicalPlan::Project(_) => "Project",
             LogicalPlan::DataSink(_) => "DataSink",
             LogicalPlan::Tail(_) => "Tail",
@@ -76,6 +81,7 @@ impl LogicalPlan {
         match self {
             LogicalPlan::DataSource(plan) => plan.base.index(),
             LogicalPlan::Filter(plan) => plan.base.index(),
+            LogicalPlan::Aggregation(plan) => plan.base.index(),
             LogicalPlan::Project(plan) => plan.base.index(),
             LogicalPlan::DataSink(plan) => plan.base.index(),
             LogicalPlan::Tail(plan) => plan.base.index(),
@@ -156,6 +162,17 @@ pub fn create_logical_plan(
         // In a full implementation, we'd convert this to a ScalarExpr
         let filter = Filter::new(where_expr, current_plans, current_index);
         current_plans = vec![Arc::new(LogicalPlan::Filter(filter))];
+        current_index += 1;
+    }
+
+    // 2.5. Create Aggregation if aggregate mappings exist
+    if !select_stmt.aggregate_mappings.is_empty() {
+        let aggregation = aggregation::Aggregation::new(
+            select_stmt.aggregate_mappings.clone(),
+            current_plans,
+            current_index,
+        );
+        current_plans = vec![Arc::new(LogicalPlan::Aggregation(aggregation))];
         current_index += 1;
     }
 

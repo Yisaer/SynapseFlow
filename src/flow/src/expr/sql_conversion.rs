@@ -290,7 +290,14 @@ fn convert_identifier_to_column(
             column_name.to_string(),
             Some(index),
         )),
-        Err(_) => Ok(ScalarExpr::column("", column_name.to_string())),
+        Err(err) => {
+            if is_aggregate_placeholder(column_name) {
+                // Aggregation placeholders (e.g., col_1) are produced during aggregate rewrite
+                // and do not belong to any source schema. Treat them as derived columns.
+                return Ok(ScalarExpr::column("", column_name.to_string()));
+            }
+            Err(err)
+        }
     }
 }
 
@@ -377,6 +384,10 @@ fn resolve_column_binding(
     } else {
         Err(ConversionError::ColumnNotFound(column_name.to_string()))
     }
+}
+
+fn is_aggregate_placeholder(name: &str) -> bool {
+    name.starts_with("col_") && name[4..].chars().all(|c| c.is_ascii_digit())
 }
 
 /// Convert JsonAccess (struct field access like a->b) to ScalarExpr

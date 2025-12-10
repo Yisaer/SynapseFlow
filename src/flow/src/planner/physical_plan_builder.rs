@@ -5,17 +5,19 @@ use crate::expr::sql_conversion::{
     convert_expr_to_scalar_with_bindings, SchemaBinding, SchemaBindingEntry, SourceBindingKind,
 };
 use crate::planner::logical::{
-    DataSinkPlan, DataSource as LogicalDataSource, Filter as LogicalFilter, LogicalPlan,
-    LogicalWindow, LogicalWindowSpec, Project as LogicalProject,
+    aggregation::Aggregation as LogicalAggregation, DataSinkPlan, DataSource as LogicalDataSource,
+    Filter as LogicalFilter, LogicalPlan, LogicalWindow, LogicalWindowSpec,
+    Project as LogicalProject,
 };
 use crate::planner::physical::physical_project::PhysicalProjectField;
 use crate::planner::physical::{
-    PhysicalBatch, PhysicalDataSink, PhysicalDataSource, PhysicalEncoder, PhysicalFilter,
-    PhysicalPlan, PhysicalProject, PhysicalResultCollect, PhysicalSharedStream,
+    PhysicalAggregation, PhysicalBatch, PhysicalDataSink, PhysicalDataSource, PhysicalEncoder,
+    PhysicalFilter, PhysicalPlan, PhysicalProject, PhysicalResultCollect, PhysicalSharedStream,
     PhysicalSinkConnector, PhysicalStreamingEncoder,
 };
 use crate::planner::sink::{PipelineSink, PipelineSinkConnector};
 use std::sync::Arc;
+use sqlparser::ast::Expr;
 
 /// Physical plan builder that manages index allocation and node caching
 pub struct PhysicalPlanBuilder {
@@ -129,6 +131,13 @@ fn create_physical_plan_with_builder_cached(
             encoder_registry,
             builder,
         )?,
+        LogicalPlan::Aggregation(logical_agg) => create_physical_aggregation_with_builder(
+            logical_agg,
+            &logical_plan,
+            bindings,
+            encoder_registry,
+            builder,
+        )?,
         LogicalPlan::DataSink(logical_sink) => create_physical_data_sink_with_builder_cached(
             logical_sink,
             &logical_plan,
@@ -223,10 +232,33 @@ fn create_physical_window_with_builder(
             let count_window =
                 crate::planner::physical::PhysicalCountWindow::new(count, physical_children, index);
             PhysicalPlan::CountWindow(count_window)
-        }
-    };
+    }
+};
 
     Ok(Arc::new(physical))
+}
+
+fn create_physical_aggregation_with_builder(
+    logical_agg: &LogicalAggregation,
+    logical_plan: &Arc<LogicalPlan>,
+    bindings: &SchemaBinding,
+    encoder_registry: &EncoderRegistry,
+    builder: &mut PhysicalPlanBuilder,
+) -> Result<Arc<PhysicalPlan>, String> {
+    let mut physical_children = Vec::new();
+    for child in logical_plan.children() {
+        let physical_child =
+            create_physical_plan_with_builder_cached(child.clone(), bindings, encoder_registry, builder)?;
+        physical_children.push(physical_child);
+    }
+    let index = builder.allocate_index();
+    let physical = PhysicalAggregation::new(
+        logical_agg.aggregate_mappings.clone(),
+        physical_children,
+        index,
+        bindings,
+    )?;
+    Ok(Arc::new(PhysicalPlan::Aggregation(physical)))
 }
 
 /// Create a PhysicalDataSource from a LogicalDataSource using centralized index management

@@ -393,6 +393,9 @@ fn create_processor_from_plan_node(
                 PlanProcessor::Project(processor),
             ))
         }
+        PhysicalPlan::Aggregation(_aggregation) => Err(ProcessorError::InvalidConfiguration(
+            "Aggregation execution is not implemented yet".to_string(),
+        )),
         PhysicalPlan::Filter(filter) => {
             let processor = FilterProcessor::new(plan_name.clone(), Arc::new(filter.clone()));
             Ok(ProcessorBuildOutput::with_processor(PlanProcessor::Filter(
