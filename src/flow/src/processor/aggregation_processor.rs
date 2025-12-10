@@ -137,10 +137,9 @@ impl Processor for AggregationProcessor {
                                 }
                                 
                                 // Immediately finalize and output results for this batch
-                                match Self::finalize_aggregates_static(&physical_aggregation, &batch_accumulators) {
+                                match Self::finalize_aggregates_static(&physical_aggregation, &batch_accumulators, collection.as_ref()) {
                                     Ok(result_collection) => {
                                         let result_data = StreamData::Collection(result_collection);
-                                        log_received_data(&id, &result_data);
                                         if let Err(e) = send_with_backpressure(&output, result_data).await {
                                             println!("[AggregationProcessor:{id}] failed to send result: {}", e);
                                             return Err(e);
@@ -273,10 +272,10 @@ impl AggregationProcessor {
         Ok(all_args)
     }
 
-    /// Static version of finalize_aggregates for use in async context
     fn finalize_aggregates_static(
         physical_aggregation: &PhysicalAggregation,
         accumulators: &[Box<dyn AggregateAccumulator>],
+        input_collection: &dyn Collection,
     ) -> Result<Box<dyn Collection>, String> {
         use crate::model::{RecordBatch, Tuple};
         use std::sync::Arc;
@@ -294,17 +293,34 @@ impl AggregationProcessor {
                 finalized_value,
             ));
         }
+
+        let mut tuples: Vec<Tuple> = input_collection.rows().to_vec();
         
-        // Create affiliate row with aggregate results
-        let affiliate_row = crate::model::AffiliateRow::new(affiliate_entries);
-        
-        // Create single-row collection with aggregate results
-        let mut tuple = Tuple::new(vec![]);
-        tuple.affiliate = Some(affiliate_row);
-        
-        let collection = RecordBatch::new(vec![tuple])
-            .map_err(|e| format!("Failed to create RecordBatch: {}", e))?;
-        
-        Ok(Box::new(collection))
+        if tuples.is_empty() {
+            let mut result_tuple = Tuple::new(vec![]);
+            let affiliate_row = crate::model::AffiliateRow::new(affiliate_entries);
+            result_tuple.affiliate = Some(affiliate_row);
+            
+            let collection = RecordBatch::new(vec![result_tuple])
+                .map_err(|e| format!("Failed to create RecordBatch: {}", e))?;
+            
+            Ok(Box::new(collection))
+        } else {
+            let last_index = tuples.len() - 1;
+            let last_tuple = &mut tuples[last_index];
+            let affiliate_row = crate::model::AffiliateRow::new(affiliate_entries.clone());
+            if let Some(existing_affiliate) = &mut last_tuple.affiliate {
+                for (key, value) in affiliate_entries {
+                    existing_affiliate.insert(key, value);
+                }
+            } else {
+                last_tuple.affiliate = Some(affiliate_row);
+            }
+            let last_tuple_cloned = last_tuple.clone();
+            let collection = RecordBatch::new(vec![last_tuple_cloned])
+                .map_err(|e| format!("Failed to create RecordBatch: {}", e))?;
+            
+            Ok(Box::new(collection))
+        }
     }
 }
