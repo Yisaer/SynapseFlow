@@ -214,8 +214,6 @@ impl ScalarExpr {
                 column_index: idx,
             })),
             None => {
-                // 当column_index为None时，应该返回错误而不是退回到ByName
-                // 这确保只有明确指定索引的列才使用ByIndex模式
                 Err(format!(
                     "column_with_index called with None index for column '{}' - use column_with_column_name for name-based references",
                     column_name.into()

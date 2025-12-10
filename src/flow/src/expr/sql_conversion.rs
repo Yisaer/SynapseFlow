@@ -297,7 +297,7 @@ fn convert_identifier_to_column(
             source_name,
             column_name.to_string(),
             Some(index),
-        ).map_err(|e| ConversionError::InvalidColumnReference(e)),
+        ).map_err(ConversionError::InvalidColumnReference),
         Err(_err) => {
             Err(ConversionError::ColumnNotFound(format!(
                 "No schema bindings available for identifier '{}",
@@ -351,7 +351,7 @@ fn convert_compound_identifier_to_column(
                 resolved_source,
                 column_name,
                 Some(index),
-            ).map_err(|e| ConversionError::InvalidColumnReference(e))
+            ).map_err(ConversionError::InvalidColumnReference)
         }
         _ => Err(ConversionError::InvalidColumnReference(format!(
             "Unsupported compound identifier with {} parts. Only 1 or 2 parts are supported.",
