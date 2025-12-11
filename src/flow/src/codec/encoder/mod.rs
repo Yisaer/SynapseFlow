@@ -50,12 +50,27 @@ pub trait CollectionEncoderStream: Send {
 /// Encoder that emits the entire collection as a JSON array of row objects.
 pub struct JsonEncoder {
     id: String,
+    props: JsonMap<String, JsonValue>,
 }
 
 impl JsonEncoder {
     /// Create a new JSON encoder with the provided identifier.
-    pub fn new(id: impl Into<String>) -> Self {
-        Self { id: id.into() }
+    pub fn new(id: impl Into<String>, props: JsonMap<String, JsonValue>) -> Self {
+        let id = id.into();
+        println!(
+            "[JsonEncoder] id={} props={}",
+            id,
+            JsonValue::Object(props.clone())
+        );
+        Self {
+            id,
+            props,
+        }
+    }
+
+    /// Access encoder props (currently unused by JSON encoder).
+    pub fn props(&self) -> &JsonMap<String, JsonValue> {
+        &self.props
     }
 
     /// Encode a tuple as a JSON object payload.
@@ -193,7 +208,7 @@ mod tests {
         ])
         .expect("valid batch");
 
-        let encoder = JsonEncoder::new("json");
+        let encoder = JsonEncoder::new("json", JsonMap::new());
         let payload = encoder.encode(&batch).expect("encode collection");
 
         let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
@@ -215,7 +230,7 @@ mod tests {
         ];
         let message = Arc::new(Message::new(Arc::<str>::from("orders"), keys, values));
         let tuple = Tuple::new(vec![message]);
-        let encoder = JsonEncoder::new("json");
+        let encoder = JsonEncoder::new("json", JsonMap::new());
         let payload = encoder.encode_tuple(&tuple).expect("encode tuple");
 
         let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
@@ -224,7 +239,7 @@ mod tests {
 
     #[test]
     fn json_encoder_streaming() {
-        let encoder = JsonEncoder::new("json");
+        let encoder = JsonEncoder::new("json", JsonMap::new());
         assert!(
             encoder.supports_streaming(),
             "json encoder should be streaming"

@@ -36,19 +36,32 @@ pub struct JsonDecoder {
     stream_name: String,
     schema: Arc<Schema>,
     schema_keys: Vec<Arc<str>>,
+    #[allow(dead_code)]
+    props: JsonMap<String, JsonValue>,
 }
 
 impl JsonDecoder {
-    pub fn new(stream_name: impl Into<String>, schema: Arc<Schema>) -> Self {
+    pub fn new(
+        stream_name: impl Into<String>,
+        schema: Arc<Schema>,
+        props: JsonMap<String, JsonValue>,
+    ) -> Self {
+        let stream_name = stream_name.into();
+        println!(
+            "[JsonDecoder] stream={} props={}",
+            stream_name,
+            JsonValue::Object(props.clone())
+        );
         let schema_keys = schema
             .column_schemas()
             .iter()
             .map(|col| Arc::<str>::from(col.name.as_str()))
             .collect();
         Self {
-            stream_name: stream_name.into(),
+            stream_name,
             schema,
             schema_keys,
+            props,
         }
     }
 
@@ -228,6 +241,7 @@ fn json_to_value(value: &JsonValue) -> Value {
 mod tests {
     use super::*;
     use datatypes::{ColumnSchema, ConcreteDatatype, Int64Type, Schema, StringType, Value};
+    use serde_json::Map as JsonMap;
 
     #[test]
     fn json_decoder_decodes_single_tuple() {
@@ -243,7 +257,7 @@ mod tests {
                 ConcreteDatatype::String(StringType),
             ),
         ]));
-        let decoder = JsonDecoder::new("orders", schema);
+        let decoder = JsonDecoder::new("orders", schema, JsonMap::new());
         let payload = br#"{"amount":10,"status":"ok"}"#.as_ref();
         let tuple = decoder.decode_tuple(payload).expect("decode tuple");
 
@@ -277,7 +291,7 @@ mod tests {
             "amount".to_string(),
             ConcreteDatatype::Int64(Int64Type),
         )]));
-        let decoder = JsonDecoder::new("orders", schema);
+        let decoder = JsonDecoder::new("orders", schema, JsonMap::new());
         let payload = br#"[{"amount":10},{"amount":20}]"#.as_ref();
         let err = decoder
             .decode_tuple(payload)

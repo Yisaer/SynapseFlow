@@ -1,5 +1,5 @@
 use crate::connector::sink::mqtt::MqttSinkConfig;
-use serde_json::Value as JsonValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::fmt;
 use std::time::Duration;
 
@@ -115,26 +115,30 @@ pub struct CustomSinkConnectorConfig {
 pub struct NopSinkConfig;
 
 /// Configuration for supported sink encoders.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SinkEncoderConfig {
     kind: String,
+    props: JsonMap<String, JsonValue>,
 }
 
 impl SinkEncoderConfig {
-    pub fn new(kind: impl Into<String>) -> Self {
-        Self { kind: kind.into() }
+    pub fn new(kind: impl Into<String>, props: JsonMap<String, JsonValue>) -> Self {
+        Self {
+            kind: kind.into(),
+            props,
+        }
     }
 
     pub fn json() -> Self {
-        Self::new("json")
+        Self::new("json", JsonMap::new())
     }
 
     pub fn kind(&self) -> &str {
         &self.kind
     }
 
-    pub fn custom_settings(&self) -> Option<&JsonValue> {
-        None
+    pub fn props(&self) -> &JsonMap<String, JsonValue> {
+        &self.props
     }
 }
 

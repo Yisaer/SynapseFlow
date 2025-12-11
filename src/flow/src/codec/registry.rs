@@ -73,8 +73,12 @@ impl DecoderRegistry {
     fn register_builtin_decoders(&self) {
         self.register_decoder(
             "json",
-            Arc::new(|_config, schema, stream_name| {
-                Ok(Arc::new(JsonDecoder::new(stream_name.to_string(), schema)) as Arc<_>)
+            Arc::new(|config, schema, stream_name| {
+                Ok(Arc::new(JsonDecoder::new(
+                    stream_name.to_string(),
+                    schema,
+                    config.props().clone(),
+                )) as Arc<_>)
             }),
         );
     }
@@ -122,12 +126,9 @@ impl EncoderRegistry {
             );
     }
 
-    pub fn instantiate(
-        &self,
-        kind: &str,
-        config: &SinkEncoderConfig,
-    ) -> Result<Arc<dyn CollectionEncoder>, CodecError> {
+    pub fn instantiate(&self, config: &SinkEncoderConfig) -> Result<Arc<dyn CollectionEncoder>, CodecError> {
         let guard = self.factories.read().expect("encoder registry poisoned");
+        let kind = config.kind();
         let factory = guard
             .get(kind)
             .ok_or_else(|| CodecError::Other(format!("encoder kind `{kind}` not registered")))?;
@@ -150,7 +151,12 @@ impl EncoderRegistry {
     fn register_builtin_encoders(&self) {
         self.register_encoder(
             "json",
-            Arc::new(|config| Ok(Arc::new(JsonEncoder::new(config.kind().to_string())) as Arc<_>)),
+            Arc::new(|config| {
+                Ok(Arc::new(JsonEncoder::new(
+                    config.kind().to_string(),
+                    config.props().clone(),
+                )) as Arc<_>)
+            }),
             true,
         );
     }

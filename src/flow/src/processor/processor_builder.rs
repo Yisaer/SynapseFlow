@@ -438,7 +438,7 @@ fn create_processor_from_plan_node(
         PhysicalPlan::Encoder(encoder) => {
             let encoder_impl = context
                 .encoder_registry()
-                .instantiate(encoder.encoder.kind(), &encoder.encoder)
+                .instantiate(&encoder.encoder)
                 .map_err(|err| ProcessorError::InvalidConfiguration(err.to_string()))?;
             let processor = EncoderProcessor::new(plan_name.clone(), encoder_impl);
             Ok(ProcessorBuildOutput::with_processor(
@@ -448,7 +448,7 @@ fn create_processor_from_plan_node(
         PhysicalPlan::StreamingEncoder(streaming) => {
             let encoder_impl = context
                 .encoder_registry()
-                .instantiate(streaming.encoder.kind(), &streaming.encoder)
+                .instantiate(&streaming.encoder)
                 .map_err(|err| ProcessorError::InvalidConfiguration(err.to_string()))?;
             let processor = StreamingEncoderProcessor::new(
                 plan_name.clone(),

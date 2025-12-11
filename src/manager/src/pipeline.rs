@@ -63,9 +63,31 @@ pub struct CreatePipelineSinkRequest {
     pub props: SinkPropsRequest,
     #[serde(rename = "commonSinkProps", default)]
     pub common: CommonSinkPropsRequest,
-    /// Encoder kind as a flat string, e.g. "json"
     #[serde(default)]
-    pub encoder: Option<String>,
+    pub encoder: EncoderConfigRequest,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(default)]
+pub struct EncoderConfigRequest {
+    #[serde(rename = "type")]
+    pub encode_type: String,
+    pub props: JsonMap<String, JsonValue>,
+}
+
+impl EncoderConfigRequest {
+    fn new(encode_type: impl Into<String>, props: JsonMap<String, JsonValue>) -> Self {
+        Self {
+            encode_type: encode_type.into(),
+            props,
+        }
+    }
+}
+
+impl Default for EncoderConfigRequest {
+    fn default() -> Self {
+        Self::new("json", JsonMap::new())
+    }
 }
 
 #[derive(Deserialize, Serialize, Default, Clone)]
@@ -309,14 +331,11 @@ pub(crate) fn build_pipeline_definition(
             }
             other => return Err(format!("unsupported sink type: {other}")),
         };
-        let encoder_kind = sink_req
-            .encoder
-            .clone()
-            .unwrap_or_else(|| "json".to_string());
+        let encoder_kind = sink_req.encoder.encode_type.clone();
         if !encoder_registry.is_registered(&encoder_kind) {
             return Err(format!("encoder kind `{encoder_kind}` not registered"));
         }
-        let encoder_config = SinkEncoderConfig::new(encoder_kind);
+        let encoder_config = SinkEncoderConfig::new(encoder_kind, sink_req.encoder.props.clone());
         let sink_definition = sink_definition
             .with_encoder(encoder_config)
             .with_common_props(sink_req.common.to_common_props());
