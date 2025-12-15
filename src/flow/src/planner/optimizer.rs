@@ -412,4 +412,92 @@ mod tests {
         └─PhysicalDataSource_0       | source=stream, decoder=json, schema=[a]";
         assert_eq!(post_table.trim_end(), expected_post);
     }
+
+    #[test]
+    fn optimize_rewrites_streaming_agg() {
+        let encoder_registry = EncoderRegistry::with_builtin_encoders();
+        let aggregate_registry = AggregateFunctionRegistry::with_builtins();
+        let registries = PipelineRegistries::new(
+            ConnectorRegistry::with_builtin_sinks(),
+            Arc::clone(&encoder_registry),
+            DecoderRegistry::with_builtin_decoders(),
+            Arc::clone(&aggregate_registry),
+        );
+
+        let schema = Arc::new(Schema::new(vec![ColumnSchema::new(
+            "stream".to_string(),
+            "a".to_string(),
+            ConcreteDatatype::Int64(Int64Type),
+        ), ColumnSchema::new(
+            "stream".to_string(),
+            "b".to_string(),
+            ConcreteDatatype::Int64(Int64Type),
+        )]));
+        let definition = StreamDefinition::new(
+            "stream",
+            Arc::clone(&schema),
+            StreamProps::Mqtt(MqttStreamProps::default()),
+            StreamDecoderConfig::json(),
+        );
+        let mut stream_defs = HashMap::new();
+        stream_defs.insert("stream".to_string(), Arc::new(definition));
+
+        let select_stmt = parse_sql_with_registry(
+            "SELECT sum(a) FROM stream GROUP BY tumblingwindow('ss', 10),b",
+            registries.aggregate_registry(),
+        )
+        .expect("failed to parse SQL");
+        let bindings = crate::expr::sql_conversion::SchemaBinding::new(vec![
+            crate::expr::sql_conversion::SchemaBindingEntry {
+                source_name: "stream".to_string(),
+                alias: None,
+                schema,
+                kind: crate::expr::sql_conversion::SourceBindingKind::Regular,
+            },
+        ]);
+
+        let connector = PipelineSinkConnector::new(
+            "test_connector",
+            SinkConnectorConfig::Nop(NopSinkConfig),
+            SinkEncoderConfig::json(),
+        );
+        let sink = PipelineSink::new("test_sink", connector);
+
+        let logical_plan =
+            create_logical_plan(select_stmt, vec![sink], &stream_defs).expect("logical plan");
+        let physical_plan =
+            crate::planner::create_physical_plan(Arc::clone(&logical_plan), &bindings, &registries)
+                .expect("physical plan");
+
+        let pre_explain =
+            PipelineExplain::new(Arc::clone(&logical_plan), Arc::clone(&physical_plan));
+        let pre_table = pre_explain.physical.table_string();
+  //       let expected_pre = r"- id                                     | info
+  // PhysicalResultCollect_6                | sink_count=1
+  // └─PhysicalDataSink_4                   | sink_id=test_sink, connector=nop
+  //   └─PhysicalEncoder_5                  | sink_id=test_sink, encoder=json
+  //     └─PhysicalProject_3                | fields=[col_1]
+  //       └─PhysicalAggregation_2          | calls=[sum(a) -> col_1], group_by=[b]
+  //         └─PhysicalTumblingWindow_1     | kind=tumbling, unit=Seconds, length=10
+  //           └─PhysicalDataSource_0       | source=stream, decoder=json, schema=[a, b]";
+  //       assert_eq!(pre_table.trim_end(), expected_pre);
+        println!("{}", pre_table);
+
+        let optimized_plan = optimize_physical_plan(
+            Arc::clone(&physical_plan),
+            encoder_registry.as_ref(),
+            aggregate_registry,
+        );
+        let post_explain = PipelineExplain::new(logical_plan, Arc::clone(&optimized_plan));
+        let post_table = post_explain.physical.table_string();
+  //       let expected_post = r"- id                                     | info
+  // PhysicalResultCollect_6                | sink_count=1
+  // └─PhysicalDataSink_4                   | sink_id=test_sink, connector=nop
+  //   └─PhysicalEncoder_5                  | sink_id=test_sink, encoder=json
+  //     └─PhysicalProject_3                | fields=[col_1]
+  //       └─PhysicalStreamingAggregation_2 | calls=[sum(a) -> col_1], window=tumbling, unit=Seconds, length=10
+  //         └─PhysicalDataSource_0         | source=stream, decoder=json, schema=[a]";
+  //       assert_eq!(post_table.trim_end(), expected_post);
+        println!("{}", post_table);
+    }
 }
