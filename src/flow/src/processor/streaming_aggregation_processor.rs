@@ -1,6 +1,7 @@
 //! StreamingAggregationProcessor - incremental aggregation with windowing.
 
 use crate::aggregation::{AggregateAccumulator, AggregateFunctionRegistry};
+use crate::expr::ScalarExpr;
 use crate::model::{Collection, RecordBatch};
 use crate::planner::physical::{
     AggregateCall, PhysicalPlan, PhysicalStreamingAggregation, StreamingWindowSpec,
@@ -20,6 +21,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
+/// Group-by metadata bundled for evaluation and output.
+#[derive(Clone)]
+struct GroupByMeta {
+    scalar: ScalarExpr,
+    is_simple: bool,
+    output_name: String,
+}
+
 /// Tracks aggregation state for a single group key.
 struct GroupState {
     accumulators: Vec<Box<dyn AggregateAccumulator>>,
@@ -31,7 +40,7 @@ struct GroupState {
 struct AggregationWorker {
     physical: Arc<PhysicalStreamingAggregation>,
     aggregate_registry: Arc<AggregateFunctionRegistry>,
-    group_by_simple_flags: Vec<bool>,
+    group_by_meta: Vec<GroupByMeta>,
     groups: HashMap<String, GroupState>,
 }
 
@@ -39,12 +48,12 @@ impl AggregationWorker {
     fn new(
         physical: Arc<PhysicalStreamingAggregation>,
         aggregate_registry: Arc<AggregateFunctionRegistry>,
-        group_by_simple_flags: Vec<bool>,
+        group_by_meta: Vec<GroupByMeta>,
     ) -> Self {
         Self {
             physical,
             aggregate_registry,
-            group_by_simple_flags,
+            group_by_meta,
             groups: HashMap::new(),
         }
     }
@@ -91,10 +100,10 @@ impl AggregationWorker {
     }
 
     fn evaluate_group_by(&self, tuple: &crate::model::Tuple) -> Result<Vec<Value>, String> {
-        let mut values = Vec::with_capacity(self.physical.group_by_scalars.len());
-        for scalar in &self.physical.group_by_scalars {
+        let mut values = Vec::with_capacity(self.group_by_meta.len());
+        for meta in &self.group_by_meta {
             values.push(
-                scalar
+                meta.scalar
                     .eval_with_tuple(tuple)
                     .map_err(|e| format!("Failed to evaluate group-by expression: {}", e))?,
             );
@@ -112,8 +121,7 @@ impl AggregationWorker {
         for (_key, mut state) in self.groups.drain() {
             let tuple = finalize_group(
                 &self.physical.aggregate_calls,
-                &self.physical.group_by_exprs,
-                &self.group_by_simple_flags,
+                &self.group_by_meta,
                 &mut state.accumulators,
                 &state.last_tuple,
                 &state.key_values,
@@ -161,7 +169,7 @@ impl WindowAggState {
         len_secs: u64,
         physical: Arc<PhysicalStreamingAggregation>,
         aggregate_registry: Arc<AggregateFunctionRegistry>,
-        group_by_simple_flags: Vec<bool>,
+        group_by_meta: Vec<GroupByMeta>,
     ) -> Self {
         Self {
             start_secs,
@@ -169,7 +177,7 @@ impl WindowAggState {
             worker: AggregationWorker::new(
                 Arc::clone(&physical),
                 Arc::clone(&aggregate_registry),
-                group_by_simple_flags,
+                group_by_meta,
             ),
         }
     }
@@ -211,12 +219,13 @@ impl WindowState {
     }
 }
 
+/// Event-time windows keyed by start timestamp; watermark drives finalization.
 struct EventWindowState {
     windows: BTreeMap<u64, WindowAggState>,
     len_secs: u64,
     physical: Arc<PhysicalStreamingAggregation>,
     aggregate_registry: Arc<AggregateFunctionRegistry>,
-    group_by_simple_flags: Vec<bool>,
+    group_by_meta: Vec<GroupByMeta>,
 }
 
 impl EventWindowState {
@@ -224,14 +233,14 @@ impl EventWindowState {
         len_secs: u64,
         physical: Arc<PhysicalStreamingAggregation>,
         aggregate_registry: Arc<AggregateFunctionRegistry>,
-        group_by_simple_flags: Vec<bool>,
+        group_by_meta: Vec<GroupByMeta>,
     ) -> Self {
         Self {
             windows: BTreeMap::new(),
             len_secs,
             physical,
             aggregate_registry,
-            group_by_simple_flags,
+            group_by_meta,
         }
     }
 
@@ -243,7 +252,7 @@ impl EventWindowState {
                 self.len_secs,
                 Arc::clone(&self.physical),
                 Arc::clone(&self.aggregate_registry),
-                self.group_by_simple_flags.clone(),
+                self.group_by_meta.clone(),
             )
         });
         entry.worker.update_groups(row)
@@ -296,12 +305,13 @@ impl EventWindowState {
     }
 }
 
+/// Processing-time windows assuming monotonically increasing timestamps.
 struct ProcessingWindowState {
     windows: VecDeque<WindowAggState>,
     len_secs: u64,
     physical: Arc<PhysicalStreamingAggregation>,
     aggregate_registry: Arc<AggregateFunctionRegistry>,
-    group_by_simple_flags: Vec<bool>,
+    group_by_meta: Vec<GroupByMeta>,
 }
 
 impl ProcessingWindowState {
@@ -309,14 +319,14 @@ impl ProcessingWindowState {
         len_secs: u64,
         physical: Arc<PhysicalStreamingAggregation>,
         aggregate_registry: Arc<AggregateFunctionRegistry>,
-        group_by_simple_flags: Vec<bool>,
+        group_by_meta: Vec<GroupByMeta>,
     ) -> Self {
         Self {
             windows: VecDeque::new(),
             len_secs,
             physical,
             aggregate_registry,
-            group_by_simple_flags,
+            group_by_meta,
         }
     }
 
@@ -332,7 +342,7 @@ impl ProcessingWindowState {
             self.len_secs,
             Arc::clone(&self.physical),
             Arc::clone(&self.aggregate_registry),
-            self.group_by_simple_flags.clone(),
+            self.group_by_meta.clone(),
         );
         self.windows.push_back(new_state);
         self.windows
@@ -396,7 +406,7 @@ pub struct StreamingCountAggregationProcessor {
     control_inputs: Vec<broadcast::Receiver<ControlSignal>>,
     output: broadcast::Sender<StreamData>,
     control_output: broadcast::Sender<ControlSignal>,
-    group_by_simple_flags: Vec<bool>,
+    group_by_meta: Vec<GroupByMeta>,
     target: u64,
 }
 
@@ -409,7 +419,7 @@ pub struct StreamingTumblingAggregationProcessor {
     control_inputs: Vec<broadcast::Receiver<ControlSignal>>,
     output: broadcast::Sender<StreamData>,
     control_output: broadcast::Sender<ControlSignal>,
-    group_by_simple_flags: Vec<bool>,
+    group_by_meta: Vec<GroupByMeta>,
     event_time: bool,
 }
 
@@ -510,7 +520,8 @@ impl StreamingCountAggregationProcessor {
         aggregate_registry: Arc<AggregateFunctionRegistry>,
         target: u64,
     ) -> Self {
-        let group_by_simple_flags = group_by_flags(&physical.group_by_exprs);
+        let group_by_meta =
+            build_group_by_meta(&physical.group_by_exprs, &physical.group_by_scalars);
         let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         Self {
@@ -521,7 +532,7 @@ impl StreamingCountAggregationProcessor {
             control_inputs: Vec::new(),
             output,
             control_output,
-            group_by_simple_flags,
+            group_by_meta,
             target,
         }
     }
@@ -565,12 +576,11 @@ impl Processor for StreamingCountAggregationProcessor {
         let control_output = self.control_output.clone();
         let aggregate_registry = Arc::clone(&self.aggregate_registry);
         let physical = Arc::clone(&self.physical);
-        let group_by_simple_flags = self.group_by_simple_flags.clone();
+        let group_by_meta = self.group_by_meta.clone();
         let target = self.target;
 
         tokio::spawn(async move {
-            let mut worker =
-                AggregationWorker::new(physical, aggregate_registry, group_by_simple_flags);
+            let mut worker = AggregationWorker::new(physical, aggregate_registry, group_by_meta);
             let mut window_state = CountWindowState::new(target);
             let mut stream_ended = false;
 
@@ -659,7 +669,8 @@ impl StreamingTumblingAggregationProcessor {
         physical: Arc<PhysicalStreamingAggregation>,
         aggregate_registry: Arc<AggregateFunctionRegistry>,
     ) -> Self {
-        let group_by_simple_flags = group_by_flags(&physical.group_by_exprs);
+        let group_by_meta =
+            build_group_by_meta(&physical.group_by_exprs, &physical.group_by_scalars);
         let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         Self {
@@ -670,7 +681,7 @@ impl StreamingTumblingAggregationProcessor {
             control_inputs: Vec::new(),
             output,
             control_output,
-            group_by_simple_flags,
+            group_by_meta,
             event_time: false,
         }
     }
@@ -695,7 +706,7 @@ impl Processor for StreamingTumblingAggregationProcessor {
         let control_output = self.control_output.clone();
         let aggregate_registry = Arc::clone(&self.aggregate_registry);
         let physical = Arc::clone(&self.physical);
-        let group_by_simple_flags = self.group_by_simple_flags.clone();
+        let group_by_meta = self.group_by_meta.clone();
         let len_secs = match physical.window {
             StreamingWindowSpec::Tumbling {
                 time_unit: _,
@@ -711,14 +722,14 @@ impl Processor for StreamingTumblingAggregationProcessor {
                     len_secs,
                     Arc::clone(&physical),
                     Arc::clone(&aggregate_registry),
-                    group_by_simple_flags.clone(),
+                    group_by_meta.clone(),
                 ))
             } else {
                 WindowState::ProcessingTime(ProcessingWindowState::new(
                     len_secs,
                     Arc::clone(&physical),
                     Arc::clone(&aggregate_registry),
-                    group_by_simple_flags.clone(),
+                    group_by_meta.clone(),
                 ))
             };
             let mut window_state = window_state;
@@ -801,10 +812,30 @@ impl Processor for StreamingTumblingAggregationProcessor {
     }
 }
 
+fn build_group_by_meta(exprs: &[Expr], scalars: &[ScalarExpr]) -> Vec<GroupByMeta> {
+    assert_eq!(
+        exprs.len(),
+        scalars.len(),
+        "group-by exprs and scalars length mismatch"
+    );
+    exprs
+        .iter()
+        .zip(scalars.iter())
+        .map(|(expr, scalar)| GroupByMeta {
+            scalar: scalar.clone(),
+            is_simple: is_simple_column_expr(expr),
+            output_name: expr.to_string(),
+        })
+        .collect()
+}
+
+fn is_simple_column_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Identifier(_))
+}
+
 fn finalize_group(
     aggregate_calls: &[AggregateCall],
-    group_by_exprs: &[Expr],
-    group_by_simple_flags: &[bool],
+    group_by_meta: &[GroupByMeta],
     accumulators: &mut [Box<dyn AggregateAccumulator>],
     last_tuple: &crate::model::Tuple,
     key_values: &[Value],
@@ -818,9 +849,10 @@ fn finalize_group(
     }
 
     for (idx, value) in key_values.iter().enumerate() {
-        if !group_by_simple_flags.get(idx).copied().unwrap_or(false) {
-            let name = group_by_exprs[idx].to_string();
-            affiliate_entries.push((Arc::new(name), value.clone()));
+        if let Some(meta) = group_by_meta.get(idx) {
+            if !meta.is_simple {
+                affiliate_entries.push((Arc::new(meta.output_name.clone()), value.clone()));
+            }
         }
     }
 
@@ -851,14 +883,6 @@ fn create_accumulators_static(
         accumulators.push(function.create_accumulator());
     }
     Ok(accumulators)
-}
-
-fn is_simple_column_expr(expr: &sqlparser::ast::Expr) -> bool {
-    matches!(expr, sqlparser::ast::Expr::Identifier(_))
-}
-
-fn group_by_flags(exprs: &[Expr]) -> Vec<bool> {
-    exprs.iter().map(is_simple_column_expr).collect()
 }
 
 fn window_start_secs_str(ts: SystemTime, len_secs: u64) -> Result<u64, String> {
