@@ -14,11 +14,10 @@ use datatypes::Value;
 use futures::stream::StreamExt;
 use sqlparser::ast::Expr;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
-use tokio::time::{interval, MissedTickBehavior};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 /// Tracks aggregation state for a single group key.
@@ -149,58 +148,236 @@ impl CountWindowState {
     }
 }
 
-/// Tracks progress for a tumbling window.
-struct TumblingWindowState {
-    length: Duration,
-    window_end: Option<Instant>,
+/// Per-window aggregation state.
+struct WindowAggState {
+    start_secs: u64,
+    end_secs: u64,
+    worker: AggregationWorker,
 }
 
-impl TumblingWindowState {
-    fn new(length: Duration) -> Self {
+impl WindowAggState {
+    fn new(
+        start_secs: u64,
+        len_secs: u64,
+        physical: Arc<PhysicalStreamingAggregation>,
+        aggregate_registry: Arc<AggregateFunctionRegistry>,
+        group_by_simple_flags: Vec<bool>,
+    ) -> Self {
         Self {
-            length,
-            window_end: None,
+            start_secs,
+            end_secs: start_secs.saturating_add(len_secs),
+            worker: AggregationWorker::new(
+                Arc::clone(&physical),
+                Arc::clone(&aggregate_registry),
+                group_by_simple_flags,
+            ),
+        }
+    }
+}
+
+/// Window manager supporting event-time and processing-time modes.
+enum WindowState {
+    EventTime(EventWindowState),
+    ProcessingTime(ProcessingWindowState),
+}
+
+impl WindowState {
+    fn add_row(&mut self, row: &crate::model::Tuple) -> Result<(), String> {
+        match self {
+            WindowState::EventTime(state) => state.add_row(row),
+            WindowState::ProcessingTime(state) => state.add_row(row),
         }
     }
 
-    fn should_finalize(&self, now: Instant) -> bool {
-        matches!(self.window_end, Some(end) if now >= end)
-    }
-
-    fn maybe_finalize(
+    async fn flush_until(
         &mut self,
-        now: Instant,
-        worker: &mut AggregationWorker,
-    ) -> Result<Option<Box<dyn Collection>>, String> {
-        if self.should_finalize(now) {
-            let result = worker.finalize_current_window()?;
-            self.window_end = Some(now + self.length);
-            return Ok(result);
-        }
-        Ok(None)
-    }
-
-    fn register_row(&mut self, now: Instant) {
-        if self.window_end.is_none() {
-            self.window_end = Some(now + self.length);
+        watermark: SystemTime,
+        output: &broadcast::Sender<StreamData>,
+    ) -> Result<(), ProcessorError> {
+        match self {
+            WindowState::EventTime(state) => state.flush_until(watermark, output).await,
+            WindowState::ProcessingTime(state) => state.flush_until(watermark, output).await,
         }
     }
 
-    fn handle_tick(
+    async fn flush_all(
         &mut self,
-        worker: &mut AggregationWorker,
-    ) -> Result<Option<Box<dyn Collection>>, String> {
-        let now = Instant::now();
-        self.maybe_finalize(now, worker)
+        output: &broadcast::Sender<StreamData>,
+    ) -> Result<(), ProcessorError> {
+        match self {
+            WindowState::EventTime(state) => state.flush_all(output).await,
+            WindowState::ProcessingTime(state) => state.flush_all(output).await,
+        }
+    }
+}
+
+struct EventWindowState {
+    windows: BTreeMap<u64, WindowAggState>,
+    len_secs: u64,
+    physical: Arc<PhysicalStreamingAggregation>,
+    aggregate_registry: Arc<AggregateFunctionRegistry>,
+    group_by_simple_flags: Vec<bool>,
+}
+
+impl EventWindowState {
+    fn new(
+        len_secs: u64,
+        physical: Arc<PhysicalStreamingAggregation>,
+        aggregate_registry: Arc<AggregateFunctionRegistry>,
+        group_by_simple_flags: Vec<bool>,
+    ) -> Self {
+        Self {
+            windows: BTreeMap::new(),
+            len_secs,
+            physical,
+            aggregate_registry,
+            group_by_simple_flags,
+        }
     }
 
-    fn flush_on_end(
+    fn add_row(&mut self, row: &crate::model::Tuple) -> Result<(), String> {
+        let start_secs = window_start_secs_str(row.timestamp, self.len_secs)?;
+        let entry = self.windows.entry(start_secs).or_insert_with(|| {
+            WindowAggState::new(
+                start_secs,
+                self.len_secs,
+                Arc::clone(&self.physical),
+                Arc::clone(&self.aggregate_registry),
+                self.group_by_simple_flags.clone(),
+            )
+        });
+        entry.worker.update_groups(row)
+    }
+
+    async fn flush_until(
         &mut self,
-        worker: &mut AggregationWorker,
-    ) -> Result<Option<Box<dyn Collection>>, String> {
-        let result = worker.finalize_current_window()?;
-        self.window_end = None;
-        Ok(result)
+        watermark: SystemTime,
+        output: &broadcast::Sender<StreamData>,
+    ) -> Result<(), ProcessorError> {
+        let watermark_secs = to_secs(watermark, "watermark")?;
+        let mut ready = Vec::new();
+        for (&start, state) in self.windows.iter() {
+            if state.end_secs <= watermark_secs {
+                ready.push(start);
+            }
+        }
+
+        for key in ready {
+            if let Some(mut state) = self.windows.remove(&key) {
+                if let Some(batch) = state
+                    .worker
+                    .finalize_current_window()
+                    .map_err(|e| ProcessorError::ProcessingError(e))?
+                {
+                    send_with_backpressure(output, StreamData::Collection(batch)).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn flush_all(
+        &mut self,
+        output: &broadcast::Sender<StreamData>,
+    ) -> Result<(), ProcessorError> {
+        let keys: Vec<u64> = self.windows.keys().copied().collect();
+        for key in keys {
+            if let Some(mut state) = self.windows.remove(&key) {
+                if let Some(batch) = state
+                    .worker
+                    .finalize_current_window()
+                    .map_err(|e| ProcessorError::ProcessingError(e))?
+                {
+                    send_with_backpressure(output, StreamData::Collection(batch)).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct ProcessingWindowState {
+    windows: VecDeque<WindowAggState>,
+    len_secs: u64,
+    physical: Arc<PhysicalStreamingAggregation>,
+    aggregate_registry: Arc<AggregateFunctionRegistry>,
+    group_by_simple_flags: Vec<bool>,
+}
+
+impl ProcessingWindowState {
+    fn new(
+        len_secs: u64,
+        physical: Arc<PhysicalStreamingAggregation>,
+        aggregate_registry: Arc<AggregateFunctionRegistry>,
+        group_by_simple_flags: Vec<bool>,
+    ) -> Self {
+        Self {
+            windows: VecDeque::new(),
+            len_secs,
+            physical,
+            aggregate_registry,
+            group_by_simple_flags,
+        }
+    }
+
+    fn add_row(&mut self, row: &crate::model::Tuple) -> Result<(), String> {
+        let start_secs = window_start_secs_str(row.timestamp, self.len_secs)?;
+        if let Some(back) = self.windows.back_mut() {
+            if back.start_secs == start_secs {
+                return back.worker.update_groups(row);
+            }
+        }
+        let new_state = WindowAggState::new(
+            start_secs,
+            self.len_secs,
+            Arc::clone(&self.physical),
+            Arc::clone(&self.aggregate_registry),
+            self.group_by_simple_flags.clone(),
+        );
+        self.windows.push_back(new_state);
+        self.windows
+            .back_mut()
+            .expect("just pushed")
+            .worker
+            .update_groups(row)
+    }
+
+    async fn flush_until(
+        &mut self,
+        watermark: SystemTime,
+        output: &broadcast::Sender<StreamData>,
+    ) -> Result<(), ProcessorError> {
+        let watermark_secs = to_secs(watermark, "watermark")?;
+        while let Some(front) = self.windows.front() {
+            if front.end_secs > watermark_secs {
+                break;
+            }
+            let mut state = self.windows.pop_front().expect("front exists");
+            if let Some(batch) = state
+                .worker
+                .finalize_current_window()
+                .map_err(|e| ProcessorError::ProcessingError(e))?
+            {
+                send_with_backpressure(output, StreamData::Collection(batch)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn flush_all(
+        &mut self,
+        output: &broadcast::Sender<StreamData>,
+    ) -> Result<(), ProcessorError> {
+        while let Some(mut state) = self.windows.pop_front() {
+            if let Some(batch) = state
+                .worker
+                .finalize_current_window()
+                .map_err(|e| ProcessorError::ProcessingError(e))?
+            {
+                send_with_backpressure(output, StreamData::Collection(batch)).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -233,6 +410,7 @@ pub struct StreamingTumblingAggregationProcessor {
     output: broadcast::Sender<StreamData>,
     control_output: broadcast::Sender<ControlSignal>,
     group_by_simple_flags: Vec<bool>,
+    event_time: bool,
 }
 
 impl StreamingAggregationProcessor {
@@ -493,26 +671,8 @@ impl StreamingTumblingAggregationProcessor {
             output,
             control_output,
             group_by_simple_flags,
+            event_time: false,
         }
-    }
-
-    fn process_collection(
-        worker: &mut AggregationWorker,
-        window_state: &mut TumblingWindowState,
-        collection: &dyn Collection,
-    ) -> Result<Vec<Box<dyn Collection>>, String> {
-        let mut outputs = Vec::new();
-        for row in collection.rows() {
-            let now = Instant::now();
-            if let Some(batch) = window_state.maybe_finalize(now, worker)? {
-                outputs.push(batch);
-            }
-
-            worker.update_groups(row)?;
-            window_state.register_row(now);
-        }
-
-        Ok(outputs)
     }
 
     fn id(&self) -> &str {
@@ -536,20 +696,32 @@ impl Processor for StreamingTumblingAggregationProcessor {
         let aggregate_registry = Arc::clone(&self.aggregate_registry);
         let physical = Arc::clone(&self.physical);
         let group_by_simple_flags = self.group_by_simple_flags.clone();
-        let window_length = match physical.window {
+        let len_secs = match physical.window {
             StreamingWindowSpec::Tumbling {
                 time_unit: _,
                 length,
-            } => Duration::from_secs(length),
+            } => length,
             _ => unreachable!("tumbling processor requires tumbling window spec"),
         };
+        let event_time = self.event_time;
 
         tokio::spawn(async move {
-            let mut worker =
-                AggregationWorker::new(physical, aggregate_registry, group_by_simple_flags);
-            let mut window_state = TumblingWindowState::new(window_length);
-            let mut ticker = interval(window_length);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let window_state = if event_time {
+                WindowState::EventTime(EventWindowState::new(
+                    len_secs,
+                    Arc::clone(&physical),
+                    Arc::clone(&aggregate_registry),
+                    group_by_simple_flags.clone(),
+                ))
+            } else {
+                WindowState::ProcessingTime(ProcessingWindowState::new(
+                    len_secs,
+                    Arc::clone(&physical),
+                    Arc::clone(&aggregate_registry),
+                    group_by_simple_flags.clone(),
+                ))
+            };
+            let mut window_state = window_state;
             let mut stream_ended = false;
 
             loop {
@@ -565,38 +737,25 @@ impl Processor for StreamingTumblingAggregationProcessor {
                             }
                         }
                     }
-                    _ = ticker.tick() => {
-                        match window_state.handle_tick(&mut worker) {
-                            Ok(Some(batch)) => {
-                                let data = StreamData::Collection(batch);
-                                send_with_backpressure(&output, data).await?
-                            }
-                            Ok(None) => {}
-                            Err(err) => {
-                                return Err(ProcessorError::ProcessingError(format!("Failed to process tumbling window tick: {err}")));
-                            }
-                        }
-                    }
                     data_item = input_streams.next() => {
                         match data_item {
                             Some(Ok(StreamData::Collection(collection))) => {
                                 log_received_data(&id, &StreamData::Collection(collection.clone()));
-                                match StreamingTumblingAggregationProcessor::process_collection(&mut worker, &mut window_state, collection.as_ref()) {
-                                    Ok(outputs) => {
-                                        for out in outputs {
-                                            let data = StreamData::Collection(out);
-                                            send_with_backpressure(&output, data).await?
-                                        }
-                                    }
-                                    Err(e) => {
-                                        return Err(ProcessorError::ProcessingError(format!("Failed to process streaming tumbling aggregation: {e}")));
-                                    }
+                                for row in collection.rows() {
+                                    window_state.add_row(row).map_err(|e| ProcessorError::ProcessingError(format!("Failed to update window state: {e}")))?;
                                 }
+                            }
+                            Some(Ok(StreamData::Watermark(ts))) => {
+                                window_state.flush_until(ts, &output).await?;
                             }
                             Some(Ok(StreamData::Control(control_signal))) => {
                                 let is_terminal = control_signal.is_terminal();
+                                let is_graceful = matches!(control_signal, ControlSignal::StreamGracefulEnd);
                                 send_control_with_backpressure(&control_output, control_signal).await?;
                                 if is_terminal {
+                                    if is_graceful {
+                                        window_state.flush_all(&output).await?;
+                                    }
                                     stream_ended = true;
                                     break;
                                 }
@@ -618,13 +777,6 @@ impl Processor for StreamingTumblingAggregationProcessor {
             }
 
             if stream_ended {
-                if let Some(batch) = window_state.flush_on_end(&mut worker).map_err(|err| {
-                    ProcessorError::ProcessingError(format!(
-                        "Failed to finalize last tumbling window: {err}"
-                    ))
-                })? {
-                    send_with_backpressure(&output, StreamData::Collection(batch)).await?;
-                }
                 send_control_with_backpressure(&control_output, ControlSignal::StreamGracefulEnd)
                     .await?;
             }
@@ -707,4 +859,19 @@ fn is_simple_column_expr(expr: &sqlparser::ast::Expr) -> bool {
 
 fn group_by_flags(exprs: &[Expr]) -> Vec<bool> {
     exprs.iter().map(is_simple_column_expr).collect()
+}
+
+fn window_start_secs_str(ts: SystemTime, len_secs: u64) -> Result<u64, String> {
+    let secs = ts
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("invalid timestamp: {e}"))?
+        .as_secs();
+    let len = len_secs.max(1);
+    Ok(secs / len * len)
+}
+
+fn to_secs(ts: SystemTime, label: &str) -> Result<u64, ProcessorError> {
+    ts.duration_since(UNIX_EPOCH)
+        .map_err(|e| ProcessorError::ProcessingError(format!("invalid {label}: {e}")))
+        .map(|d| d.as_secs())
 }

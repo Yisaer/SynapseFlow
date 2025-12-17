@@ -35,7 +35,7 @@ impl TumblingWindowProcessor {
         Self {
             id: id.into(),
             window_length: length,
-            event_time: true, // 默认 event time，后续由 builder 决定是否设为 processing time
+            event_time: false, // default processing time; builder can switch to event time
             inputs: Vec::new(),
             control_inputs: Vec::new(),
             output,
