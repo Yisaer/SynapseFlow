@@ -11,7 +11,7 @@ use crate::processor::{
     AggregationProcessor, BatchProcessor, ControlSignal, ControlSourceProcessor,
     DataSourceProcessor, EncoderProcessor, FilterProcessor, Processor, ProcessorError,
     ProjectProcessor, ResultCollectProcessor, SharedStreamProcessor, SinkProcessor, StreamData,
-    StreamingAggregationProcessor, StreamingEncoderProcessor,
+    StreamingAggregationProcessor, StreamingEncoderProcessor, WatermarkProcessor,
 };
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -41,6 +41,8 @@ pub enum PlanProcessor {
     StreamingEncoder(StreamingEncoderProcessor),
     /// Streaming aggregation combining window + aggregation
     StreamingAggregation(StreamingAggregationProcessor),
+    /// Watermark processor used to drive time progression
+    Watermark(WatermarkProcessor),
     /// SinkProcessor created from PhysicalDataSink
     Sink(SinkProcessor),
     /// ResultCollectProcessor created from PhysicalResultCollect
@@ -107,6 +109,7 @@ impl PlanProcessor {
             PlanProcessor::Encoder(p) => p.id(),
             PlanProcessor::StreamingEncoder(p) => p.id(),
             PlanProcessor::StreamingAggregation(p) => p.id(),
+            PlanProcessor::Watermark(p) => p.id(),
             PlanProcessor::Sink(p) => p.id(),
             PlanProcessor::ResultCollect(p) => p.id(),
         }
@@ -130,6 +133,7 @@ impl PlanProcessor {
             PlanProcessor::Encoder(p) => p.start(),
             PlanProcessor::StreamingEncoder(p) => p.start(),
             PlanProcessor::StreamingAggregation(p) => p.start(),
+            PlanProcessor::Watermark(p) => p.start(),
             PlanProcessor::Sink(p) => p.start(),
             PlanProcessor::ResultCollect(p) => p.start(),
         }
@@ -147,6 +151,7 @@ impl PlanProcessor {
             PlanProcessor::Encoder(p) => p.subscribe_output(),
             PlanProcessor::StreamingEncoder(p) => p.subscribe_output(),
             PlanProcessor::StreamingAggregation(p) => p.subscribe_output(),
+            PlanProcessor::Watermark(p) => p.subscribe_output(),
             PlanProcessor::Sink(p) => p.subscribe_output(),
             PlanProcessor::ResultCollect(p) => p.subscribe_output(),
         }
@@ -164,6 +169,7 @@ impl PlanProcessor {
             PlanProcessor::Encoder(p) => p.subscribe_control_output(),
             PlanProcessor::StreamingEncoder(p) => p.subscribe_control_output(),
             PlanProcessor::StreamingAggregation(p) => p.subscribe_control_output(),
+            PlanProcessor::Watermark(p) => p.subscribe_control_output(),
             PlanProcessor::Sink(p) => p.subscribe_control_output(),
             PlanProcessor::ResultCollect(p) => p.subscribe_control_output(),
         }
@@ -181,6 +187,7 @@ impl PlanProcessor {
             PlanProcessor::Encoder(p) => p.add_input(receiver),
             PlanProcessor::StreamingEncoder(p) => p.add_input(receiver),
             PlanProcessor::StreamingAggregation(p) => p.add_input(receiver),
+            PlanProcessor::Watermark(p) => p.add_input(receiver),
             PlanProcessor::Sink(p) => p.add_input(receiver),
             PlanProcessor::ResultCollect(p) => p.add_input(receiver),
         }
@@ -198,6 +205,7 @@ impl PlanProcessor {
             PlanProcessor::Encoder(p) => p.add_control_input(receiver),
             PlanProcessor::StreamingEncoder(p) => p.add_control_input(receiver),
             PlanProcessor::StreamingAggregation(p) => p.add_control_input(receiver),
+            PlanProcessor::Watermark(p) => p.add_control_input(receiver),
             PlanProcessor::Sink(p) => p.add_control_input(receiver),
             PlanProcessor::ResultCollect(p) => p.add_control_input(receiver),
         }
@@ -477,6 +485,18 @@ fn create_processor_from_plan_node(
             );
             Ok(ProcessorBuildOutput::with_processor(
                 PlanProcessor::StreamingEncoder(processor),
+            ))
+        }
+        PhysicalPlan::Watermark(_) => {
+            let processor =
+                WatermarkProcessor::from_physical_plan(plan_name.clone(), Arc::clone(plan))
+                    .ok_or_else(|| {
+                        ProcessorError::InvalidConfiguration(
+                            "Unsupported watermark configuration".to_string(),
+                        )
+                    })?;
+            Ok(ProcessorBuildOutput::with_processor(
+                PlanProcessor::Watermark(processor),
             ))
         }
         PhysicalPlan::CountWindow(count_window) => {
