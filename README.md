@@ -1,6 +1,6 @@
 # synapseFlow
 
-Streaming SQL engine that turns StreamDialect SQL into executable pipelines. `flow` is the core runtime that plans and runs pipelines; `manager` exposes a REST API for creating streams and pipelines; `storage` persists metadata; `telemetry` adds metrics and profiling hooks.
+an open-source streaming processor written in Rust and designed for resource-sensitive environments.
 
 ## Quick start
 Prereq: Rust stable toolchain and `make`.
