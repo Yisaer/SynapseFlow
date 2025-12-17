@@ -90,8 +90,6 @@ impl Processor for SlidingWindowProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                state.flush_all().await?;
-                                send_with_backpressure(&output, StreamData::stream_end()).await?;
                                 println!("[SlidingWindowProcessor:{id}] stopped");
                                 return Ok(());
                             }
@@ -103,7 +101,7 @@ impl Processor for SlidingWindowProcessor {
                     item = input_streams.next() => {
                         match item {
                             Some(Ok(StreamData::Collection(collection))) => {
-                                if let Err(e) = state.add_collection(collection.as_ref()).await {
+                                if let Err(e) = state.add_collection(collection).await {
                                     forward_error(&output, &id, e.to_string()).await?;
                                 }
                             }
@@ -173,7 +171,7 @@ enum WindowState {
 impl WindowState {
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
         match self {
             WindowState::EventTime(state) => state.add_collection(collection).await,
@@ -224,7 +222,7 @@ impl ProcessingState {
 
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
         match self {
             ProcessingState::WithLookahead(state) => state.add_collection(collection).await,
@@ -264,11 +262,14 @@ impl ProcessingWithoutLookaheadState {
 
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
-        for tuple in collection.rows() {
-            self.rows.push_back(tuple.clone());
+        let rows = collection
+            .into_rows()
+            .map_err(|e| ProcessorError::ProcessingError(format!("failed to extract rows: {e}")))?;
+        for tuple in rows {
             let t = tuple.timestamp;
+            self.rows.push_back(tuple);
             let start = t
                 .checked_sub(self.lookback)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -324,11 +325,14 @@ impl ProcessingWithLookaheadState {
 
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
-        for tuple in collection.rows() {
-            self.rows.push_back(tuple.clone());
+        let rows = collection
+            .into_rows()
+            .map_err(|e| ProcessorError::ProcessingError(format!("failed to extract rows: {e}")))?;
+        for tuple in rows {
             let t = tuple.timestamp;
+            self.rows.push_back(tuple);
             let start = t
                 .checked_sub(self.lookback)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -413,7 +417,7 @@ impl EventState {
 
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
         match self {
             EventState::WithLookahead(state) => state.add_collection(collection).await,
@@ -453,13 +457,15 @@ impl EventWithoutLookaheadState {
 
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
-        for tuple in collection.rows() {
-            let sec = to_epoch_sec(tuple.timestamp)?;
-            self.rows_by_sec.entry(sec).or_default().push(tuple.clone());
-
+        let rows = collection
+            .into_rows()
+            .map_err(|e| ProcessorError::ProcessingError(format!("failed to extract rows: {e}")))?;
+        for tuple in rows {
             let t = tuple.timestamp;
+            let sec = to_epoch_sec(t)?;
+            self.rows_by_sec.entry(sec).or_default().push(tuple);
             let start = t
                 .checked_sub(self.lookback)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -516,13 +522,15 @@ impl EventWithLookaheadState {
 
     async fn add_collection(
         &mut self,
-        collection: &dyn crate::model::Collection,
+        collection: Box<dyn crate::model::Collection>,
     ) -> Result<(), ProcessorError> {
-        for tuple in collection.rows() {
-            let sec = to_epoch_sec(tuple.timestamp)?;
-            self.rows_by_sec.entry(sec).or_default().push(tuple.clone());
-
+        let rows = collection
+            .into_rows()
+            .map_err(|e| ProcessorError::ProcessingError(format!("failed to extract rows: {e}")))?;
+        for tuple in rows {
             let t = tuple.timestamp;
+            let sec = to_epoch_sec(t)?;
+            self.rows_by_sec.entry(sec).or_default().push(tuple);
             let start = t
                 .checked_sub(self.lookback)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
