@@ -1,7 +1,6 @@
-use super::{build_group_by_meta, GroupByMeta};
+use super::{build_group_by_meta, create_accumulators_static, GroupByMeta};
 use crate::aggregation::AggregateFunctionRegistry;
-use crate::expr::func::BinaryFunc;
-use crate::model::{AffiliateRow, RecordBatch, Tuple};
+use crate::model::{AffiliateRow, RecordBatch};
 use crate::planner::physical::{PhysicalStreamingAggregation, StreamingWindowSpec};
 use crate::processor::base::{
     fan_in_control_streams, fan_in_streams, send_control_with_backpressure, send_with_backpressure,
@@ -17,17 +16,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-/// Streaming sliding aggregation processor.
+/// Streaming sliding aggregation processor (incremental).
 ///
-/// Implementation notes:
-/// - This processor does not buffer raw tuples for window evaluation.
-/// - Instead, it stores per-tuple "contributions" (the evaluated aggregate arguments) together
-///   with an expiry timestamp, and recomputes the current window result by summing all active
-///   contributions (add-only).
-/// - For `slidingwindow('ss', lookback)` (no lookahead), the window is emitted on every tuple.
-/// - For `slidingwindow('ss', lookback, lookahead)`, the window is emitted only when receiving
-///   a deadline watermark from upstream (the watermark processor is responsible for scheduling
-///   `t + lookahead`).
+/// - Maintain a list of active windows, each with its own incremental aggregation state.
+/// - For every incoming tuple, append a new window starting at that tuple's timestamp.
+/// - Update all active windows whose `[start, start + length + delay)` contains the tuple time.
+/// - Emit the oldest active window:
+///   - immediately when `delay == 0` (per-tuple trigger),
+///   - or when receiving deadline watermarks from upstream (`delay > 0`).
+///
+/// Notes:
+/// - This is processing-time only: tuple timestamps are assumed to be non-decreasing.
+/// - For `slidingwindow('ss', length)`, we treat `length` as the window length and `delay = 0`.
+/// - For `slidingwindow('ss', length, delay)`, we treat the third argument as the delay.
 pub struct StreamingSlidingAggregationProcessor {
     id: String,
     physical: Arc<PhysicalStreamingAggregation>,
@@ -37,29 +38,19 @@ pub struct StreamingSlidingAggregationProcessor {
     output: broadcast::Sender<StreamData>,
     control_output: broadcast::Sender<ControlSignal>,
     group_by_meta: Vec<GroupByMeta>,
-    mode: SlidingMode,
+    length_secs: u64,
+    delay_secs: u64,
 }
 
-#[derive(Clone, Copy)]
-enum SlidingMode {
-    EmitOnTuple {
-        lookback_secs: u64,
-    },
-    EmitOnWatermark {
-        lookback_secs: u64,
-        lookahead_secs: u64,
-    },
-}
-
-struct Contribution {
-    expiry_secs: u64,
-    agg_values: Vec<Value>,
-}
-
-struct GroupState {
-    contributions: VecDeque<Contribution>,
-    last_tuple: Tuple,
+struct WindowGroupState {
+    accumulators: Vec<Box<dyn crate::aggregation::AggregateAccumulator>>,
+    last_tuple: crate::model::Tuple,
     key_values: Vec<Value>,
+}
+
+struct IncAggWindow {
+    start_secs: u64,
+    groups: HashMap<String, WindowGroupState>,
 }
 
 impl StreamingSlidingAggregationProcessor {
@@ -73,22 +64,12 @@ impl StreamingSlidingAggregationProcessor {
         let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
 
-        let mode = match physical.window {
+        let (length_secs, delay_secs) = match physical.window {
             StreamingWindowSpec::Sliding {
                 time_unit: _,
                 lookback,
-                lookahead: None,
-            } => SlidingMode::EmitOnTuple {
-                lookback_secs: lookback,
-            },
-            StreamingWindowSpec::Sliding {
-                time_unit: _,
-                lookback,
-                lookahead: Some(lookahead),
-            } => SlidingMode::EmitOnWatermark {
-                lookback_secs: lookback,
-                lookahead_secs: lookahead,
-            },
+                lookahead,
+            } => (lookback.max(1), lookahead.unwrap_or(0)),
             _ => unreachable!("sliding processor requires sliding window spec"),
         };
 
@@ -101,7 +82,8 @@ impl StreamingSlidingAggregationProcessor {
             output,
             control_output,
             group_by_meta,
-            mode,
+            length_secs,
+            delay_secs,
         }
     }
 
@@ -124,18 +106,6 @@ impl StreamingSlidingAggregationProcessor {
                 return Err(ProcessorError::InvalidConfiguration(format!(
                     "Aggregate function '{}' does not support incremental updates",
                     call.func_name
-                )));
-            }
-            if call.func_name.to_lowercase() != "sum" {
-                return Err(ProcessorError::InvalidConfiguration(format!(
-                    "Streaming sliding aggregation currently supports only SUM, got '{}'",
-                    call.func_name
-                )));
-            }
-            if call.args.len() != 1 {
-                return Err(ProcessorError::InvalidConfiguration(format!(
-                    "SUM expects exactly one argument, got {}",
-                    call.args.len()
                 )));
             }
         }
@@ -161,11 +131,13 @@ impl Processor for StreamingSlidingAggregationProcessor {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
         let physical = Arc::clone(&self.physical);
+        let aggregate_registry = Arc::clone(&self.aggregate_registry);
         let group_by_meta = self.group_by_meta.clone();
-        let mode = self.mode;
+        let length_secs = self.length_secs;
+        let delay_secs = self.delay_secs;
 
         tokio::spawn(async move {
-            let mut groups: HashMap<String, GroupState> = HashMap::new();
+            let mut windows: VecDeque<IncAggWindow> = VecDeque::new();
             let mut stream_ended = false;
 
             fn to_epoch_secs(ts: SystemTime) -> Result<u64, ProcessorError> {
@@ -177,100 +149,127 @@ impl Processor for StreamingSlidingAggregationProcessor {
                     .as_secs())
             }
 
-            fn drop_expired(contributions: &mut VecDeque<Contribution>, now_secs: u64) {
-                while let Some(front) = contributions.front() {
-                    if front.expiry_secs < now_secs {
-                        contributions.pop_front();
+            fn gc_windows(
+                windows: &mut VecDeque<IncAggWindow>,
+                now_secs: u64,
+                length_secs: u64,
+                delay_secs: u64,
+            ) {
+                while let Some(front) = windows.front() {
+                    if front
+                        .start_secs
+                        .saturating_add(length_secs)
+                        .saturating_add(delay_secs)
+                        < now_secs
+                    {
+                        windows.pop_front();
                     } else {
                         break;
                     }
                 }
             }
 
-            fn compute_totals(
-                contributions: &VecDeque<Contribution>,
-                call_count: usize,
-            ) -> Result<(Vec<Value>, usize), ProcessorError> {
-                let mut totals: Vec<Option<Value>> = vec![None; call_count];
-                let mut row_count: usize = 0;
-                for contrib in contributions.iter() {
-                    row_count += 1;
-                    for (idx, value) in contrib.agg_values.iter().enumerate() {
-                        if value.is_null() {
-                            continue;
-                        }
-                        totals[idx] = match totals[idx].take() {
-                            None => Some(value.clone()),
-                            Some(existing) => Some(
-                                BinaryFunc::Add
-                                    .eval_binary(existing, value.clone())
-                                    .map_err(|e| {
-                                        ProcessorError::ProcessingError(format!(
-                                            "failed to add aggregate value: {e}"
-                                        ))
-                                    })?,
-                            ),
-                        };
-                    }
-                }
-                Ok((
-                    totals
-                        .into_iter()
-                        .map(|v| v.unwrap_or(Value::Null))
-                        .collect(),
-                    row_count,
-                ))
-            }
-
-            fn build_output_tuple(
+            fn update_window_with_tuple(
                 physical: &PhysicalStreamingAggregation,
+                aggregate_registry: &AggregateFunctionRegistry,
                 group_by_meta: &[GroupByMeta],
-                state: &GroupState,
-                totals: &[Value],
-            ) -> Tuple {
-                let mut tuple = state.last_tuple.clone();
-                let mut affiliate = tuple
-                    .affiliate
-                    .take()
-                    .unwrap_or_else(|| AffiliateRow::new(Vec::new()));
-
-                for (call, value) in physical.aggregate_calls.iter().zip(totals.iter()) {
-                    affiliate.insert(Arc::new(call.output_column.clone()), value.clone());
+                window: &mut IncAggWindow,
+                tuple: &crate::model::Tuple,
+            ) -> Result<(), ProcessorError> {
+                let mut key_values = Vec::with_capacity(group_by_meta.len());
+                for meta in group_by_meta {
+                    key_values.push(meta.scalar.eval_with_tuple(tuple).map_err(|e| {
+                        ProcessorError::ProcessingError(format!(
+                            "failed to evaluate group-by expression: {e}"
+                        ))
+                    })?);
                 }
+                let key_repr = format!("{:?}", key_values);
 
-                for (idx, value) in state.key_values.iter().enumerate() {
-                    if let Some(meta) = group_by_meta.get(idx) {
-                        if !meta.is_simple {
-                            affiliate.insert(Arc::new(meta.output_name.clone()), value.clone());
-                        }
+                let entry = match window.groups.entry(key_repr) {
+                    Entry::Occupied(o) => o.into_mut(),
+                    Entry::Vacant(v) => {
+                        let accumulators = create_accumulators_static(
+                            &physical.aggregate_calls,
+                            aggregate_registry,
+                        )
+                        .map_err(ProcessorError::ProcessingError)?;
+                        v.insert(WindowGroupState {
+                            accumulators,
+                            last_tuple: tuple.clone(),
+                            key_values: key_values.clone(),
+                        })
                     }
+                };
+
+                entry.last_tuple = tuple.clone();
+                entry.key_values = key_values;
+
+                for (idx, call) in physical.aggregate_calls.iter().enumerate() {
+                    let mut args = Vec::with_capacity(call.args.len());
+                    for arg_expr in &call.args {
+                        args.push(arg_expr.eval_with_tuple(tuple).map_err(|e| {
+                            ProcessorError::ProcessingError(format!(
+                                "failed to evaluate aggregate argument: {e}"
+                            ))
+                        })?);
+                    }
+                    entry
+                        .accumulators
+                        .get_mut(idx)
+                        .ok_or_else(|| {
+                            ProcessorError::ProcessingError("accumulator missing".to_string())
+                        })?
+                        .update(&args)
+                        .map_err(ProcessorError::ProcessingError)?;
                 }
 
-                tuple.affiliate = Some(affiliate);
-                tuple
+                Ok(())
             }
 
-            async fn emit_window(
+            async fn emit_oldest_window(
                 output: &broadcast::Sender<StreamData>,
                 physical: &PhysicalStreamingAggregation,
                 group_by_meta: &[GroupByMeta],
-                groups: &HashMap<String, GroupState>,
+                windows: &VecDeque<IncAggWindow>,
             ) -> Result<(), ProcessorError> {
-                if groups.is_empty() {
+                let Some(window) = windows.front() else {
+                    return Ok(());
+                };
+                if window.groups.is_empty() {
                     return Ok(());
                 }
 
-                let mut out_rows = Vec::new();
-                for state in groups.values() {
-                    if state.contributions.is_empty() {
-                        continue;
+                let mut out_rows = Vec::with_capacity(window.groups.len());
+                for state in window.groups.values() {
+                    let mut affiliate_entries = Vec::new();
+                    for (call, accumulator) in physical
+                        .aggregate_calls
+                        .iter()
+                        .zip(state.accumulators.iter())
+                    {
+                        affiliate_entries
+                            .push((Arc::new(call.output_column.clone()), accumulator.finalize()));
                     }
-                    let (totals, row_count) =
-                        compute_totals(&state.contributions, physical.aggregate_calls.len())?;
-                    if row_count == 0 {
-                        continue;
+                    for (idx, value) in state.key_values.iter().enumerate() {
+                        if let Some(meta) = group_by_meta.get(idx) {
+                            if !meta.is_simple {
+                                affiliate_entries
+                                    .push((Arc::new(meta.output_name.clone()), value.clone()));
+                            }
+                        }
                     }
-                    out_rows.push(build_output_tuple(physical, group_by_meta, state, &totals));
+
+                    let mut tuple = state.last_tuple.clone();
+                    let mut affiliate = tuple
+                        .affiliate
+                        .take()
+                        .unwrap_or_else(|| AffiliateRow::new(Vec::new()));
+                    for (k, v) in affiliate_entries {
+                        affiliate.insert(k, v);
+                    }
+                    tuple.affiliate = Some(affiliate);
+                    out_rows.push(tuple);
                 }
 
                 if out_rows.is_empty() {
@@ -279,64 +278,6 @@ impl Processor for StreamingSlidingAggregationProcessor {
                 let batch = RecordBatch::new(out_rows)
                     .map_err(|e| ProcessorError::ProcessingError(e.to_string()))?;
                 send_with_backpressure(output, StreamData::collection(Box::new(batch))).await?;
-                Ok(())
-            }
-
-            fn update_group(
-                physical: &PhysicalStreamingAggregation,
-                group_by_meta: &[GroupByMeta],
-                groups: &mut HashMap<String, GroupState>,
-                tuple: Tuple,
-                expiry_secs: u64,
-            ) -> Result<(), ProcessorError> {
-                let mut key_values = Vec::with_capacity(group_by_meta.len());
-                for meta in group_by_meta.iter() {
-                    key_values.push(meta.scalar.eval_with_tuple(&tuple).map_err(|e| {
-                        ProcessorError::ProcessingError(format!(
-                            "failed to evaluate group-by expression: {e}"
-                        ))
-                    })?);
-                }
-                let key_repr = format!("{:?}", key_values);
-
-                let mut agg_values = Vec::with_capacity(physical.aggregate_calls.len());
-                for call in &physical.aggregate_calls {
-                    let value = call
-                        .args
-                        .first()
-                        .expect("validated SUM args")
-                        .eval_with_tuple(&tuple)
-                        .map_err(|e| {
-                            ProcessorError::ProcessingError(format!(
-                                "failed to evaluate aggregate argument: {e}"
-                            ))
-                        })?;
-                    agg_values.push(value);
-                }
-
-                match groups.entry(key_repr) {
-                    Entry::Vacant(v) => {
-                        let mut contributions = VecDeque::new();
-                        contributions.push_back(Contribution {
-                            expiry_secs,
-                            agg_values,
-                        });
-                        v.insert(GroupState {
-                            contributions,
-                            last_tuple: tuple,
-                            key_values,
-                        });
-                    }
-                    Entry::Occupied(mut o) => {
-                        let entry = o.get_mut();
-                        entry.last_tuple = tuple;
-                        entry.key_values = key_values;
-                        entry.contributions.push_back(Contribution {
-                            expiry_secs,
-                            agg_values,
-                        });
-                    }
-                }
                 Ok(())
             }
 
@@ -362,41 +303,48 @@ impl Processor for StreamingSlidingAggregationProcessor {
 
                                 for tuple in rows {
                                     let now_secs = to_epoch_secs(tuple.timestamp)?;
-                                    let expiry_secs = match mode {
-                                        SlidingMode::EmitOnTuple { lookback_secs } => {
-                                            now_secs.saturating_add(lookback_secs)
-                                        }
-                                        SlidingMode::EmitOnWatermark { lookback_secs, lookahead_secs } => {
-                                            now_secs
-                                                .saturating_add(lookback_secs)
-                                                .saturating_add(lookahead_secs)
-                                        }
-                                    };
+                                    gc_windows(&mut windows, now_secs, length_secs, delay_secs);
 
-                                    update_group(&physical, &group_by_meta, &mut groups, tuple, expiry_secs)?;
+                                    windows.push_back(IncAggWindow {
+                                        start_secs: now_secs,
+                                        groups: HashMap::new(),
+                                    });
 
-                                    // Processing-time default: timestamps are non-decreasing, so we can
-                                    // expire eagerly using the current tuple timestamp.
-                                    for state in groups.values_mut() {
-                                        drop_expired(&mut state.contributions, now_secs);
+                                    for window in windows.iter_mut() {
+                                        if window.start_secs <= now_secs
+                                            && window
+                                                .start_secs
+                                                .saturating_add(length_secs)
+                                                .saturating_add(delay_secs)
+                                                > now_secs
+                                        {
+                                            update_window_with_tuple(
+                                                &physical,
+                                                aggregate_registry.as_ref(),
+                                                &group_by_meta,
+                                                window,
+                                                &tuple,
+                                            )?;
+                                        }
                                     }
 
-                                    // Prune empty groups.
-                                    groups.retain(|_, state| !state.contributions.is_empty());
-
-                                    if let SlidingMode::EmitOnTuple { .. } = mode {
-                                        emit_window(&output, &physical, &group_by_meta, &groups).await?;
+                                    if delay_secs == 0 {
+                                        emit_oldest_window(&output, &physical, &group_by_meta, &windows)
+                                            .await?;
                                     }
                                 }
                             }
                             Some(Ok(StreamData::Watermark(ts))) => {
-                                if let SlidingMode::EmitOnWatermark { .. } = mode {
-                                    let now_secs = to_epoch_secs(ts)?;
-                                    for state in groups.values_mut() {
-                                        drop_expired(&mut state.contributions, now_secs);
+                                if delay_secs == 0 {
+                                    continue;
+                                }
+                                let now_secs = to_epoch_secs(ts)?;
+                                gc_windows(&mut windows, now_secs, length_secs, delay_secs);
+                                if let Some(front) = windows.front() {
+                                    if front.start_secs.saturating_add(delay_secs) <= now_secs {
+                                        emit_oldest_window(&output, &physical, &group_by_meta, &windows)
+                                            .await?;
                                     }
-                                    groups.retain(|_, state| !state.contributions.is_empty());
-                                    emit_window(&output, &physical, &group_by_meta, &groups).await?;
                                 }
                             }
                             Some(Ok(StreamData::Control(control_signal))) => {
@@ -405,8 +353,8 @@ impl Processor for StreamingSlidingAggregationProcessor {
                                 send_with_backpressure(&output, StreamData::control(control_signal)).await?;
                                 if is_terminal {
                                     if is_graceful {
-                                        // Best-effort: emit the current window once.
-                                        emit_window(&output, &physical, &group_by_meta, &groups).await?;
+                                        emit_oldest_window(&output, &physical, &group_by_meta, &windows)
+                                            .await?;
                                     }
                                     stream_ended = true;
                                     break;
