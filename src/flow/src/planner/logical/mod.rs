@@ -479,9 +479,7 @@ fn convert_window_spec(window: parser_window::Window) -> Result<LogicalWindowSpe
                 lookahead,
             })
         }
-        parser_window::Window::State { .. } => {
-            Err("statewindow is parsed, but not yet supported by the flow planner".to_string())
-        }
+        parser_window::Window::State { open, emit } => Ok(LogicalWindowSpec::State { open, emit }),
     }
 }
 
@@ -600,6 +598,33 @@ mod logical_plan_tests {
         let window_children = project_children[0].children();
         assert_eq!(window_children.len(), 1);
         assert_eq!(window_children[0].get_plan_type(), "DataSource");
+    }
+
+    #[test]
+    fn test_create_logical_plan_with_state_window() {
+        let sql = "SELECT * FROM users GROUP BY statewindow(a > 0, b = 1)";
+        let select_stmt = parse_sql(sql).unwrap();
+        let stream_defs = make_stream_defs(&["users"]);
+
+        let plan = create_logical_plan(select_stmt, Vec::new(), &stream_defs).unwrap();
+
+        assert_eq!(plan.get_plan_type(), "Project");
+        let project_children = plan.children();
+        assert_eq!(project_children.len(), 1);
+
+        assert_eq!(project_children[0].get_plan_type(), "Window");
+        let window = match project_children[0].as_ref() {
+            LogicalPlan::Window(window) => window,
+            other => panic!("Expected Window, found {}", other.get_plan_type()),
+        };
+
+        match &window.spec {
+            LogicalWindowSpec::State { open, emit } => {
+                assert_eq!(open.to_string(), "a > 0");
+                assert_eq!(emit.to_string(), "b = 1");
+            }
+            other => panic!("Expected State window, got {:?}", other),
+        }
     }
 
     #[test]

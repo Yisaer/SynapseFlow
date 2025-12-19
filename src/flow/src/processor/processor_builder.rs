@@ -746,6 +746,9 @@ fn create_processor_from_plan_node(
                 PlanProcessor::SlidingWindow(processor),
             ))
         }
+        PhysicalPlan::StateWindow(_) => Err(ProcessorError::InvalidConfiguration(
+            "statewindow is planned, but not yet supported by processors".to_string(),
+        )),
         PhysicalPlan::DataSink(sink_plan) => {
             let processor_id = format!("{}_{}", plan_name, sink_plan.connector.sink_id);
             let mut processor = SinkProcessor::new(processor_id);
