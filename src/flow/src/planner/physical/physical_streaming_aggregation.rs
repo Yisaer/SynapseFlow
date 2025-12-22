@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Window spec captured for streaming aggregation rewrite.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum StreamingWindowSpec {
     Tumbling {
@@ -20,6 +21,14 @@ pub enum StreamingWindowSpec {
         time_unit: TimeUnit,
         lookback: u64,
         lookahead: Option<u64>,
+    },
+    State {
+        open_expr: Expr,
+        emit_expr: Expr,
+        partition_by_exprs: Vec<Expr>,
+        open_scalar: ScalarExpr,
+        emit_scalar: ScalarExpr,
+        partition_by_scalars: Vec<ScalarExpr>,
     },
 }
 

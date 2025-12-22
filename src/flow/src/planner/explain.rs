@@ -247,10 +247,24 @@ fn build_logical_node(plan: &Arc<LogicalPlan>) -> ExplainNode {
                     None => info.push("lookahead=none".to_string()),
                 }
             }
-            LogicalWindowSpec::State { open, emit } => {
+            LogicalWindowSpec::State {
+                open,
+                emit,
+                partition_by,
+            } => {
                 info.push("kind=state".to_string());
                 info.push(format!("open={}", open.as_ref()));
                 info.push(format!("emit={}", emit.as_ref()));
+                if !partition_by.is_empty() {
+                    info.push(format!(
+                        "partition_by={}",
+                        partition_by
+                            .iter()
+                            .map(|e| e.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ));
+                }
             }
         },
     }
@@ -353,7 +367,7 @@ fn build_physical_node_with_prefix(
                     .collect::<Vec<_>>();
                 info.push(format!("group_by=[{}]", group_exprs.join(", ")));
             }
-            match aggregation.window {
+            match &aggregation.window {
                 crate::planner::physical::StreamingWindowSpec::Tumbling { time_unit, length } => {
                     info.push("window=tumbling".to_string());
                     info.push(format!("unit={:?}", time_unit));
@@ -374,6 +388,26 @@ fn build_physical_node_with_prefix(
                     match lookahead {
                         Some(lookahead) => info.push(format!("lookahead={}", lookahead)),
                         None => info.push("lookahead=none".to_string()),
+                    }
+                }
+                crate::planner::physical::StreamingWindowSpec::State {
+                    open_expr,
+                    emit_expr,
+                    partition_by_exprs,
+                    ..
+                } => {
+                    info.push("window=state".to_string());
+                    info.push(format!("open={}", open_expr));
+                    info.push(format!("emit={}", emit_expr));
+                    if !partition_by_exprs.is_empty() {
+                        info.push(format!(
+                            "partition_by={}",
+                            partition_by_exprs
+                                .iter()
+                                .map(|e| e.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ));
                     }
                 }
             }
@@ -470,6 +504,17 @@ fn build_physical_node_with_prefix(
             info.push("kind=state".to_string());
             info.push(format!("open={}", window.open_expr));
             info.push(format!("emit={}", window.emit_expr));
+            if !window.partition_by_exprs.is_empty() {
+                info.push(format!(
+                    "partition_by={}",
+                    window
+                        .partition_by_exprs
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
         }
     }
 

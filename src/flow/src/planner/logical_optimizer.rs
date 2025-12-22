@@ -1,5 +1,5 @@
 use crate::expr::sql_conversion::{SchemaBinding, SchemaBindingEntry};
-use crate::planner::logical::{LogicalPlan, LogicalWindow, TailPlan};
+use crate::planner::logical::{LogicalPlan, TailPlan};
 use datatypes::Schema;
 use sqlparser::ast::{Expr as SqlExpr, FunctionArg, FunctionArgExpr, Ident, ObjectName};
 use std::collections::{HashMap, HashSet};
@@ -95,7 +95,20 @@ impl<'a> ColumnUsageCollector<'a> {
                     self.collect_expr(expr);
                 }
             }
-            LogicalPlan::Window(LogicalWindow { .. }) => {}
+            LogicalPlan::Window(window) => {
+                if let crate::planner::logical::LogicalWindowSpec::State {
+                    open,
+                    emit,
+                    partition_by,
+                } = &window.spec
+                {
+                    self.collect_expr(open.as_ref());
+                    self.collect_expr(emit.as_ref());
+                    for expr in partition_by {
+                        self.collect_expr(expr);
+                    }
+                }
+            }
             LogicalPlan::DataSource(_) => {}
             LogicalPlan::DataSink(_) => {}
             LogicalPlan::Tail(TailPlan { .. }) => {}
@@ -467,5 +480,74 @@ mod tests {
             post_json,
             r##"{"children":[{"children":[],"id":"DataSource_0","info":["source=stream","decoder=json","schema=[a]"],"operator":"DataSource"}],"id":"Project_1","info":["fields=[a]"],"operator":"Project"}"##
         );
+    }
+
+    #[test]
+    fn logical_optimizer_keeps_window_partition_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            ColumnSchema::new(
+                "stream".to_string(),
+                "a".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+            ColumnSchema::new(
+                "stream".to_string(),
+                "b".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+            ColumnSchema::new(
+                "stream".to_string(),
+                "c".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+            ColumnSchema::new(
+                "stream".to_string(),
+                "d".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+            ),
+        ]));
+        let definition = StreamDefinition::new(
+            "stream",
+            Arc::clone(&schema),
+            StreamProps::Mqtt(MqttStreamProps::default()),
+            StreamDecoderConfig::json(),
+        );
+        let mut stream_defs = HashMap::new();
+        stream_defs.insert("stream".to_string(), Arc::new(definition));
+
+        let sql =
+            "SELECT a FROM stream GROUP BY statewindow(a = 1, a = 4) OVER (PARTITION BY b, c)";
+        let select_stmt = parse_sql(sql).expect("parse sql");
+        let logical =
+            create_logical_plan(select_stmt, Vec::new(), &stream_defs).expect("logical plan");
+
+        let bindings = SchemaBinding::new(vec![SchemaBindingEntry {
+            source_name: "stream".to_string(),
+            alias: None,
+            schema: Arc::clone(&schema),
+            kind: crate::expr::sql_conversion::SourceBindingKind::Regular,
+        }]);
+
+        let (optimized, pruned) = optimize_logical_plan(Arc::clone(&logical), &bindings);
+
+        // The pruned schema must keep a (project) plus b/c (window partition).
+        let entry = pruned
+            .entries()
+            .iter()
+            .find(|e| e.source_name == "stream")
+            .expect("binding entry");
+        let cols: Vec<_> = entry
+            .schema
+            .column_schemas()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+
+        assert!(cols.contains(&"a"));
+        assert!(cols.contains(&"b"));
+        assert!(cols.contains(&"c"));
+
+        // Avoid unused warning for optimized plan.
+        assert_eq!(optimized.get_plan_type(), "Project");
     }
 }

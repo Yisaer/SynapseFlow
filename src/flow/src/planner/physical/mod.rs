@@ -35,6 +35,7 @@ pub use physical_window::{
 };
 
 /// Enum describing all supported physical execution nodes
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum PhysicalPlan {
     DataSource(PhysicalDataSource),
