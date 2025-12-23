@@ -670,6 +670,9 @@ fn create_processor_from_plan_node(
                 PlanProcessor::Project(processor),
             ))
         }
+        PhysicalPlan::StatefulFunction(_stateful) => Err(ProcessorError::InvalidConfiguration(
+            "StatefulFunctionProcessor not implemented yet".to_string(),
+        )),
         PhysicalPlan::Aggregation(aggregation) => {
             let processor = AggregationProcessor::new(
                 plan_name.clone(),
