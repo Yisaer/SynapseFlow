@@ -253,6 +253,7 @@ pub fn create_pipeline(
         registries.encoder_registry(),
         registries.decoder_registry(),
         registries.aggregate_registry(),
+        registries.stateful_registry(),
     )?;
     Ok(pipeline)
 }

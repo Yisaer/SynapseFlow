@@ -575,6 +575,7 @@ fn build_pipeline_runtime_with_logical_ir(
         registries.encoder_registry(),
         registries.decoder_registry(),
         registries.aggregate_registry(),
+        registries.stateful_registry(),
     )
     .map_err(|err| err.to_string())?;
     pipeline.set_pipeline_id(definition.id().to_string());
@@ -644,6 +645,7 @@ fn build_pipeline_runtime_from_logical_ir(
         registries.encoder_registry(),
         registries.decoder_registry(),
         registries.aggregate_registry(),
+        registries.stateful_registry(),
     )
     .map_err(|err| err.to_string())?;
 
