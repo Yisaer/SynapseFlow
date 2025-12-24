@@ -732,17 +732,6 @@ impl Processor for EventtimeWatermarkProcessor {
                                 )
                                 .await?;
                             }
-                            Some(Ok(StreamData::Watermark(ts))) => {
-                                let target = EventtimeWatermarkProcessor::to_nanos(ts)?;
-                                flush_up_to(
-                                    &id,
-                                    &output,
-                                    target,
-                                    &mut current_watermark_nanos,
-                                    &mut buffer,
-                                )
-                                .await?;
-                            }
                             Some(Ok(StreamData::Control(signal))) => {
                                 let is_terminal = signal.is_terminal();
                                 if matches!(signal, ControlSignal::StreamGracefulEnd) {
