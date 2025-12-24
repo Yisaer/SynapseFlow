@@ -6,6 +6,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    pub logging: LoggingConfig,
     pub profiling: ProfilingConfig,
     pub metrics: MetricsConfig,
     pub server: ServerConfig,
@@ -14,6 +15,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            logging: LoggingConfig::default(),
             profiling: ProfilingConfig {
                 enabled: None,
                 addr: None,
@@ -23,6 +25,79 @@ impl Default for AppConfig {
                 poll_interval_secs: None,
             },
             server: ServerConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    pub output: LoggingOutput,
+    pub level: LogLevel,
+    pub include_source: bool,
+    pub file: FileLoggingConfig,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            output: LoggingOutput::Stdout,
+            level: LogLevel::Info,
+            include_source: true,
+            file: FileLoggingConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoggingOutput {
+    Stdout,
+    File,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FileLoggingConfig {
+    pub dir: String,
+    pub file_name: String,
+    pub rotation: LogRotationConfig,
+}
+
+impl Default for FileLoggingConfig {
+    fn default() -> Self {
+        Self {
+            dir: "./logs".to_string(),
+            file_name: "app.log".to_string(),
+            rotation: LogRotationConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LogRotationConfig {
+    pub keep_days: u64,
+    pub max_num: u64,
+    pub max_size_mb: u64,
+}
+
+impl Default for LogRotationConfig {
+    fn default() -> Self {
+        Self {
+            keep_days: 7,
+            max_num: 30,
+            max_size_mb: 256,
         }
     }
 }
@@ -183,5 +258,56 @@ metrics:
             cfg.server.manager_addr.as_deref(),
             Some(crate::server::DEFAULT_MANAGER_ADDR)
         );
+    }
+
+    #[test]
+    fn default_logging_is_stdout_with_source() {
+        let cfg = AppConfig::default();
+        match cfg.logging.output {
+            LoggingOutput::Stdout => {}
+            LoggingOutput::File => panic!("expected default logging.output=stdout"),
+        }
+        assert_eq!(cfg.logging.include_source, true);
+        match cfg.logging.level {
+            LogLevel::Info => {}
+            _ => panic!("expected default logging.level=info"),
+        }
+    }
+
+    #[test]
+    fn loads_logging_config() {
+        let yaml = r#"
+logging:
+  output: file
+  level: warn
+  include_source: false
+  file:
+    dir: "./tmp/logs"
+    file_name: "app.log"
+    rotation:
+      keep_days: 3
+      max_num: 10
+      max_size_mb: 16
+"#;
+        let path = unique_temp_path("logging");
+        std::fs::write(&path, yaml).unwrap();
+
+        let cfg = AppConfig::load_required(&path).unwrap();
+        match cfg.logging.output {
+            LoggingOutput::File => {}
+            _ => panic!("expected output=file"),
+        }
+        match cfg.logging.level {
+            LogLevel::Warn => {}
+            _ => panic!("expected level=warn"),
+        }
+        assert_eq!(cfg.logging.include_source, false);
+        assert_eq!(cfg.logging.file.dir, "./tmp/logs");
+        assert_eq!(cfg.logging.file.file_name, "app.log");
+        assert_eq!(cfg.logging.file.rotation.keep_days, 3);
+        assert_eq!(cfg.logging.file.rotation.max_num, 10);
+        assert_eq!(cfg.logging.file.rotation.max_size_mb, 16);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
