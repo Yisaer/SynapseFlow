@@ -58,13 +58,12 @@ impl Processor for DecoderProcessor {
         let decoder = Arc::clone(&self.decoder);
         let projection = self.projection.clone();
         let processor_id = self.id.clone();
-        let log_prefix = format!("[DecoderProcessor:{processor_id}]");
         let base_inputs = std::mem::take(&mut self.inputs);
         let mut input_streams = fan_in_streams(base_inputs);
         let control_receivers = std::mem::take(&mut self.control_inputs);
         let mut control_streams = fan_in_control_streams(control_receivers);
         let mut control_active = !control_streams.is_empty();
-        println!("{log_prefix} starting");
+        tracing::info!(processor_id = %processor_id, "decoder processor starting");
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -74,8 +73,8 @@ impl Processor for DecoderProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                println!("{log_prefix} received StreamEnd (control)");
-                                println!("{log_prefix} stopped");
+                                tracing::info!(processor_id = %processor_id, "received StreamEnd (control)");
+                                tracing::info!(processor_id = %processor_id, "stopped");
                                 return Ok(());
                             }
                             continue;
@@ -112,20 +111,20 @@ impl Processor for DecoderProcessor {
                                 let is_terminal = data.is_terminal();
                                 send_with_backpressure(&output, data).await?;
                                 if is_terminal {
-                                    println!("{log_prefix} received StreamEnd (data)");
-                                    println!("{log_prefix} stopped");
+                                    tracing::info!(processor_id = %processor_id, "received StreamEnd (data)");
+                                    tracing::info!(processor_id = %processor_id, "stopped");
                                     return Ok(());
                                 }
                             }
                             Some(Err(BroadcastStreamRecvError::Lagged(skipped))) => {
                                 let message =
                                     format!("Decoder input lagged by {} messages", skipped);
-                                println!("{log_prefix} input lagged by {skipped} messages");
+                                tracing::warn!(processor_id = %processor_id, skipped = skipped, "input lagged");
                                 forward_error(&output, &processor_id, message).await?;
                                 continue;
                             }
                             None => {
-                                println!("{log_prefix} stopped");
+                                tracing::info!(processor_id = %processor_id, "stopped");
                                 return Ok(());
                             }
                         }

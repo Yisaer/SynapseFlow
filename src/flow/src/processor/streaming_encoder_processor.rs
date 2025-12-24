@@ -148,7 +148,7 @@ impl StreamingEncoderProcessor {
             ProcessorError::ProcessingError(format!("stream finish error: {err}"))
         })?;
         send_with_backpressure(output, StreamData::encoded(Box::new(batch), payload)).await?;
-        println!("[StreamingEncoderProcessor:{processor_id}] flushed batch");
+        tracing::debug!(processor_id = %processor_id, "flushed batch");
         Ok(())
     }
 
@@ -178,7 +178,7 @@ impl Processor for StreamingEncoderProcessor {
         let encoder = Arc::clone(&self.encoder);
         let mode = StreamingBatchMode::new(self.batch_count, self.batch_duration).unwrap();
         let processor_id = self.id.clone();
-        println!("[StreamingEncoderProcessor:{processor_id}] starting");
+        tracing::info!(processor_id = %processor_id, "streaming encoder processor starting");
 
         tokio::spawn(async move {
             let mut buffer: Vec<Tuple> = Vec::new();
@@ -193,10 +193,10 @@ impl Processor for StreamingEncoderProcessor {
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
                                 if let Err(err) = StreamingEncoderProcessor::flush_buffer(&processor_id, &mut buffer, &mut stream_state, &output).await {
-                                    println!("[StreamingEncoderProcessor:{processor_id}] flush error: {err}");
+                                    tracing::error!(processor_id = %processor_id, error = %err, "flush error");
                                     forward_error(&output, &processor_id, err.to_string()).await?;
                                 }
-                                println!("[StreamingEncoderProcessor:{processor_id}] received StreamEnd (control)");
+                                tracing::info!(processor_id = %processor_id, "received StreamEnd (control)");
                                 return Ok(());
                             }
                             continue;
@@ -210,7 +210,7 @@ impl Processor for StreamingEncoderProcessor {
                         }
                     }, if timer.is_some() => {
                         if let Err(err) = StreamingEncoderProcessor::flush_buffer(&processor_id, &mut buffer, &mut stream_state, &output).await {
-                            println!("[StreamingEncoderProcessor:{processor_id}] flush error: {err}");
+                            tracing::error!(processor_id = %processor_id, error = %err, "flush error");
                             forward_error(&output, &processor_id, err.to_string()).await?;
                         }
                         if let Some(duration) = mode.duration() {
@@ -231,7 +231,11 @@ impl Processor for StreamingEncoderProcessor {
                                     &output,
                                     &mut timer,
                                 ).await {
-                                    println!("[StreamingEncoderProcessor:{processor_id}] handle collection error: {err}");
+                                    tracing::error!(
+                                        processor_id = %processor_id,
+                                        error = %err,
+                                        "handle collection error"
+                                    );
                                     forward_error(&output, &processor_id, err.to_string()).await?;
                                 }
                             }
@@ -240,13 +244,13 @@ impl Processor for StreamingEncoderProcessor {
                                 let is_terminal = data.is_terminal();
                                 if is_terminal {
                                     if let Err(err) = StreamingEncoderProcessor::flush_buffer(&processor_id, &mut buffer, &mut stream_state, &output).await {
-                                        println!("[StreamingEncoderProcessor:{processor_id}] flush error: {err}");
+                                        tracing::error!(processor_id = %processor_id, error = %err, "flush error");
                                         forward_error(&output, &processor_id, err.to_string()).await?;
                                     }
                                 }
                                 send_with_backpressure(&output, data.clone()).await?;
                                 if is_terminal {
-                                    println!("[StreamingEncoderProcessor:{processor_id}] received StreamEnd (data)");
+                                    tracing::info!(processor_id = %processor_id, "received StreamEnd (data)");
                                     return Ok(());
                                 }
                                 if let Some(duration) = mode.duration() {
@@ -258,15 +262,19 @@ impl Processor for StreamingEncoderProcessor {
                                     "StreamingEncoderProcessor input lagged by {} messages",
                                     skipped
                                 );
-                                println!("[StreamingEncoderProcessor:{processor_id}] input lagged by {skipped} messages");
+                                tracing::warn!(
+                                    processor_id = %processor_id,
+                                    skipped = skipped,
+                                    "input lagged"
+                                );
                                 forward_error(&output, &processor_id, message).await?;
                             }
                             None => {
                                 if let Err(err) = StreamingEncoderProcessor::flush_buffer(&processor_id, &mut buffer, &mut stream_state, &output).await {
-                                    println!("[StreamingEncoderProcessor:{processor_id}] flush error: {err}");
+                                    tracing::error!(processor_id = %processor_id, error = %err, "flush error");
                                     forward_error(&output, &processor_id, err.to_string()).await?;
                                 }
-                                println!("[StreamingEncoderProcessor:{processor_id}] input streams closed");
+                                tracing::info!(processor_id = %processor_id, "input streams closed");
                                 return Ok(());
                             }
                         }

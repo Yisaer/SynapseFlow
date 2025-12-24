@@ -142,7 +142,7 @@ impl SharedStreamRegistry {
         let stream_name = entry.name().to_string();
         tokio::spawn(async move {
             if let Err(err) = entry.stop_runtime().await {
-                println!("[SharedStream:{stream_name}] shutdown error: {err}");
+                tracing::error!(stream_name = %stream_name, error = %err, "shared stream shutdown error");
             }
         });
 
@@ -541,8 +541,10 @@ impl SharedStreamInner {
                         }
                     }
                     Err(RecvError::Lagged(skipped)) => {
-                        println!(
-                            "[SharedStream:{name_for_data}] datasource output lagged by {skipped} messages"
+                        tracing::warn!(
+                            stream_name = %name_for_data,
+                            skipped = skipped,
+                            "datasource output lagged"
                         );
                     }
                     Err(RecvError::Closed) => break,
@@ -562,8 +564,10 @@ impl SharedStreamInner {
                         }
                     }
                     Err(RecvError::Lagged(skipped)) => {
-                        println!(
-                            "[SharedStream:{name_for_control}] control channel lagged by {skipped} messages"
+                        tracing::warn!(
+                            stream_name = %name_for_control,
+                            skipped = skipped,
+                            "control channel lagged"
                         );
                     }
                     Err(RecvError::Closed) => break,
@@ -746,7 +750,7 @@ impl SharedStreamInner {
         drop(state);
         if should_stop {
             if let Err(err) = Arc::clone(self).stop_runtime().await {
-                println!("[SharedStream:{}] shutdown error: {err}", self.name());
+                tracing::error!(stream_name = %self.name(), error = %err, "shared stream shutdown error");
             }
         }
     }

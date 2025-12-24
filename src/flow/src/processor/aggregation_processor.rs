@@ -222,11 +222,7 @@ impl Processor for AggregationProcessor {
         let control_output = self.control_output.clone();
         let physical_aggregation = self.physical_aggregation.clone();
         let aggregate_registry = self.aggregate_registry.clone();
-
-        println!(
-            "[AggregationProcessor:{id}] starting with {} aggregate calls",
-            physical_aggregation.aggregate_calls.len()
-        );
+        tracing::info!(processor_id = %id, "aggregation processor starting");
 
         tokio::spawn(async move {
             let mut control_streams = fan_in_control_streams(control_receivers);
@@ -240,7 +236,7 @@ impl Processor for AggregationProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                println!("[AggregationProcessor:{id}] received StreamEnd (control)");
+                                tracing::info!(processor_id = %id, "received StreamEnd (control)");
                                 stream_ended = true;
                                 break;
                             }
@@ -255,10 +251,10 @@ impl Processor for AggregationProcessor {
                                     Ok(result_collection) => {
                                         let result_data = StreamData::Collection(result_collection);
                                         if let Err(e) = send_with_backpressure(&output, result_data).await {
-                                            println!("[AggregationProcessor:{id}] failed to send result: {}", e);
+                                            tracing::error!(processor_id = %id, error = %e, "failed to send result");
                                             return Err(e);
                                         }
-                                        println!("[AggregationProcessor:{id}] processed batch and sent grouped results");
+                                        tracing::debug!(processor_id = %id, "processed batch and sent grouped results");
                                     }
                                     Err(e) => {
                                         return Err(ProcessorError::ProcessingError(format!("Failed to process aggregation: {}", e)));
@@ -269,7 +265,7 @@ impl Processor for AggregationProcessor {
                                 let is_terminal = control_signal.is_terminal();
                                 send_control_with_backpressure(&control_output, control_signal).await?;
                                 if is_terminal {
-                                    println!("[AggregationProcessor:{id}] received StreamEnd (data)");
+                                    tracing::info!(processor_id = %id, "received StreamEnd (data)");
                                     stream_ended = true;
                                     break;
                                 }
@@ -280,10 +276,10 @@ impl Processor for AggregationProcessor {
                                 send_with_backpressure(&output, other_data).await?;
                             }
                             Some(Err(BroadcastStreamRecvError::Lagged(n))) => {
-                                println!("[AggregationProcessor:{id}] lagged by {n} messages");
+                                tracing::warn!(processor_id = %id, skipped = n, "input lagged");
                             }
                             None => {
-                                println!("[AggregationProcessor:{id}] all input streams ended");
+                                tracing::info!(processor_id = %id, "all input streams ended");
                                 break;
                             }
                         }
@@ -293,15 +289,15 @@ impl Processor for AggregationProcessor {
 
             // Stream has ended, just forward the end signal as results were already sent for each batch
             if stream_ended {
-                println!("[AggregationProcessor:{id}] stream ended, forwarding end signal");
+                tracing::info!(processor_id = %id, "stream ended, forwarding end signal");
 
                 // Send StreamGracefulEnd signal downstream
                 send_control_with_backpressure(&control_output, ControlSignal::StreamGracefulEnd)
                     .await?;
-                println!("[AggregationProcessor:{id}] aggregation processing completed");
+                tracing::info!(processor_id = %id, "aggregation processing completed");
             }
 
-            println!("[AggregationProcessor:{id}] stopped");
+            tracing::info!(processor_id = %id, "stopped");
             Ok(())
         })
     }

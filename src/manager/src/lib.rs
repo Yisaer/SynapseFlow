@@ -41,7 +41,7 @@ pub async fn start_server(
         .with_state(state);
 
     let addr: SocketAddr = addr.parse()?;
-    println!("Manager listening on http://{addr}");
+    tracing::info!(manager_addr = %addr, "manager listening");
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())

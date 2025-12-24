@@ -171,7 +171,7 @@ impl SourceConnector for MqttSourceConnector {
 
         self.receiver = Some(receiver);
         let stream = ReceiverStream::new(self.receiver.take().unwrap());
-        println!("[MqttSourceConnector:{}] starting", self.id);
+        tracing::info!(connector_id = %self.id, "mqtt source starting");
         Ok(Box::pin(stream))
     }
 
@@ -180,7 +180,7 @@ impl SourceConnector for MqttSourceConnector {
             let _ = tx.send(());
         }
         self.receiver = None;
-        println!("[MqttSourceConnector:{}] closed", self.id);
+        tracing::info!(connector_id = %self.id, "mqtt source closed");
         Ok(())
     }
 }

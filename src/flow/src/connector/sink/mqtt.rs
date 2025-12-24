@@ -165,7 +165,7 @@ async fn run_event_loop(mut event_loop: EventLoop) {
             Ok(Event::Incoming(_)) | Ok(Event::Outgoing(_)) => {}
             Err(ConnectionError::RequestsDone) => break,
             Err(err) => {
-                eprintln!("[mqtt_sink] event loop error: {err}");
+                tracing::error!(error = %err, "mqtt sink event loop error");
                 break;
             }
         }
@@ -197,14 +197,15 @@ impl MqttSinkConnector {
                 .acquire_client(&connector_key)
                 .await
                 .map_err(|err| SinkConnectorError::Other(err.to_string()))?;
-            println!(
-                "[MqttSinkConnector:{}] starting with shared client {}",
-                self.id, connector_key
+            tracing::info!(
+                connector_id = %self.id,
+                connector_key = %connector_key,
+                "mqtt sink starting with shared client"
             );
             self.client = Some(SinkClient::Shared(client));
         } else {
             let standalone = StandaloneMqttClient::new(&self.config).await?;
-            println!("[MqttSinkConnector:{}] starting standalone client", self.id);
+            tracing::info!(connector_id = %self.id, "mqtt sink starting standalone client");
             self.client = Some(SinkClient::Standalone(standalone));
         }
         Ok(())
@@ -263,7 +264,7 @@ impl SinkConnector for MqttSinkConnector {
     async fn close(&mut self) -> Result<(), SinkConnectorError> {
         if let Some(client) = self.client.take() {
             client.shutdown().await?;
-            println!("[MqttSinkConnector:{}] closed", self.id);
+            tracing::info!(connector_id = %self.id, "mqtt sink closed");
         }
         Ok(())
     }

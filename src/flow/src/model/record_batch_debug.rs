@@ -2,11 +2,16 @@ use crate::model::RecordBatch;
 
 impl RecordBatch {
     pub fn debug_print(&self) {
-        println!("[RecordBatch] rows={}", self.num_rows());
+        tracing::debug!(rows = self.num_rows(), "record batch");
         for (row_idx, row) in self.rows().iter().enumerate() {
-            println!("  row {row_idx}:");
+            tracing::debug!(row_idx = row_idx, "record batch row");
             for ((source, column), value) in row.entries() {
-                println!("    {}.{} = {:?}", source, column, value);
+                tracing::debug!(
+                    source = source,
+                    column = column,
+                    value = ?value,
+                    "record batch value"
+                );
             }
         }
     }

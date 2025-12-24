@@ -305,7 +305,7 @@ impl PipelineManager {
                     definition.clone(),
                     &snapshot_record.logical_plan_ir,
                 ) {
-                    println!("[plan_cache] hit pipeline {}", definition.id());
+                    tracing::debug!(pipeline_id = %definition.id(), "plan_cache hit");
                     return Ok(crate::planner::plan_cache::PlanCacheBuildResult {
                         snapshot,
                         hit: true,
@@ -315,7 +315,7 @@ impl PipelineManager {
             }
         }
 
-        println!("[plan_cache] miss pipeline {}", definition.id());
+        tracing::debug!(pipeline_id = %definition.id(), "plan_cache miss");
         let (snapshot, logical_ir) = self.create_pipeline_with_logical_ir(definition)?;
         Ok(crate::planner::plan_cache::PlanCacheBuildResult {
             snapshot,
@@ -420,9 +420,10 @@ impl PipelineManager {
             let pipeline_id = entry.definition.id().to_string();
             tokio::spawn(async move {
                 if let Err(err) = close_pipeline(entry.pipeline).await {
-                    eprintln!(
-                        "[PipelineManager] failed to close pipeline {}: {err}",
-                        pipeline_id
+                    tracing::error!(
+                        pipeline_id = %pipeline_id,
+                        error = %err,
+                        "failed to close pipeline"
                     );
                 }
             });
@@ -537,7 +538,7 @@ fn build_pipeline_runtime_with_logical_ir(
         registries.aggregate_registry(),
     );
     let explain = PipelineExplain::new(Arc::clone(&logical_plan), Arc::clone(&optimized_plan));
-    println!("[Pipeline Explain]\n{}", explain.to_pretty_string());
+    tracing::info!(explain = %explain.to_pretty_string(), "pipeline explain");
 
     let mut pipeline = create_processor_pipeline(
         optimized_plan,
@@ -607,7 +608,7 @@ fn build_pipeline_runtime_from_logical_ir(
         registries.aggregate_registry(),
     );
     let explain = PipelineExplain::new(Arc::clone(&logical_plan), Arc::clone(&optimized_plan));
-    println!("[Pipeline Explain]\n{}", explain.to_pretty_string());
+    tracing::info!(explain = %explain.to_pretty_string(), "pipeline explain");
 
     let mut pipeline = create_processor_pipeline(
         optimized_plan,

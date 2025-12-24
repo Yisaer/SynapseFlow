@@ -1,6 +1,5 @@
 use flow::FlowInstance;
 use manager::storage_bridge;
-use std::env;
 #[cfg(feature = "profiling")]
 use std::ffi::CString;
 #[cfg(feature = "profiling")]
@@ -40,17 +39,25 @@ const DEFAULT_PROFILE_ADDR: &str = "0.0.0.0:6060";
 #[cfg(feature = "metrics")]
 const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9898";
 pub const DEFAULT_DATA_DIR: &str = "./tmp";
-const DEFAULT_MANAGER_ADDR: &str = "0.0.0.0:8080";
+pub const DEFAULT_MANAGER_ADDR: &str = "0.0.0.0:8080";
+#[cfg(feature = "metrics")]
+const DEFAULT_METRICS_POLL_INTERVAL_SECS: u64 = 5;
 
 /// Options for initializing the server runtime.
 #[derive(Debug, Clone, Default)]
 pub struct ServerOptions {
-    /// Override profiling enablement; if None, use env defaults.
+    /// Enable profiling endpoints (feature-gated); if None, uses default (false).
     pub profiling_enabled: Option<bool>,
     /// Custom data directory for storage; if None, uses DEFAULT_DATA_DIR.
     pub data_dir: Option<String>,
-    /// Manager listen address; if None, uses MANAGER_ADDR env or default.
+    /// Manager listen address; if None, uses default.
     pub manager_addr: Option<String>,
+    /// Profiling server bind address (feature-gated); if None, uses default.
+    pub profile_addr: Option<String>,
+    /// Metrics exporter bind address (feature-gated); if None, uses default.
+    pub metrics_addr: Option<String>,
+    /// Metrics polling interval in seconds (feature-gated); if None, uses default.
+    pub metrics_poll_interval_secs: Option<u64>,
 }
 
 /// Runtime context returned by [`init`] and consumed by [`start`].
@@ -93,29 +100,27 @@ pub async fn init(
     instance: FlowInstance,
 ) -> Result<ServerContext, Box<dyn std::error::Error + Send + Sync>> {
     log_allocator();
-    let profiling_enabled = opts
-        .profiling_enabled
-        .unwrap_or_else(profile_server_enabled);
+    let profiling_enabled = opts.profiling_enabled.unwrap_or(false);
     if profiling_enabled {
         ensure_jemalloc_profiling();
     }
 
-    init_metrics_exporter().await?;
+    init_metrics_exporter(&opts).await?;
     if profiling_enabled {
-        start_profile_server();
+        start_profile_server(&opts);
     }
 
-    let manager_addr = opts.manager_addr.unwrap_or_else(|| {
-        env::var("MANAGER_ADDR").unwrap_or_else(|_| DEFAULT_MANAGER_ADDR.to_string())
-    });
+    let manager_addr = opts
+        .manager_addr
+        .unwrap_or_else(|| DEFAULT_MANAGER_ADDR.to_string());
     let data_dir = opts
         .data_dir
         .unwrap_or_else(|| DEFAULT_DATA_DIR.to_string());
 
     let storage = StorageManager::new(&data_dir)?;
-    println!(
-        "[synapse-flow] storage dir: {}",
-        storage.base_dir().display()
+    tracing::info!(
+        storage_dir = %storage.base_dir().display(),
+        "storage initialized"
     );
 
     storage_bridge::load_from_storage(&storage, &instance)
@@ -133,18 +138,18 @@ pub async fn init(
 /// Start the manager server and await termination (Ctrl+C or server error).
 pub async fn start(ctx: ServerContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (instance, storage, manager_addr, _profiling_enabled) = ctx.into_parts();
-    println!("Starting manager on {}", manager_addr);
+    tracing::info!(manager_addr = %manager_addr, "starting manager");
     let manager_future = manager::start_server(manager_addr.clone(), instance, storage);
 
     tokio::select! {
         result = manager_future => {
             if let Err(err) = result {
-                eprintln!("Manager server exited with error: {}", err);
+                tracing::error!(error = %err, "manager server exited with error");
                 return Err(err);
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            println!("Ctrl+C received, shutting down...");
+            tracing::info!("ctrl+c received, shutting down");
         }
     }
 
@@ -153,57 +158,61 @@ pub async fn start(ctx: ServerContext) -> Result<(), Box<dyn std::error::Error +
 
 #[cfg(all(feature = "profiling", not(target_env = "msvc")))]
 fn log_allocator() {
-    println!("[synapse-flow] global allocator: jemalloc");
+    tracing::info!("global allocator: jemalloc");
 }
 
 #[cfg(all(feature = "profiling", target_env = "msvc"))]
 fn log_allocator() {
-    println!("[synapse-flow] profiling enabled but using system allocator on MSVC");
+    tracing::info!("profiling enabled but using system allocator on MSVC");
 }
 
 #[cfg(not(feature = "profiling"))]
 fn log_allocator() {
-    println!("[synapse-flow] global allocator: system default");
+    tracing::info!("global allocator: system default");
 }
 
 #[cfg(feature = "profiling")]
-fn start_profile_server() {
-    let addr_str = env::var("PROFILE_ADDR").unwrap_or_else(|_| DEFAULT_PROFILE_ADDR.to_string());
+fn start_profile_server(opts: &ServerOptions) {
+    let addr_str = opts
+        .profile_addr
+        .clone()
+        .unwrap_or_else(|| DEFAULT_PROFILE_ADDR.to_string());
     let addr: SocketAddr = match addr_str.parse() {
         Ok(a) => a,
         Err(err) => {
-            eprintln!("[ProfileServer] invalid PROFILE_ADDR {addr_str}: {err}");
+            tracing::error!(error = %err, profile_addr = %addr_str, "invalid profile addr");
             return;
         }
     };
 
-    println!("[ProfileServer] enabling profiling endpoints on {}", addr);
+    tracing::info!(profile_addr = %addr, "enabling profiling endpoints");
     thread::spawn(move || {
         if let Err(err) = run_profile_server(addr) {
-            eprintln!("[ProfileServer] server error: {err}");
+            tracing::error!(error = %err, "profile server error");
         }
     });
 }
 
 #[cfg(not(feature = "profiling"))]
-fn start_profile_server() {}
+fn start_profile_server(_opts: &ServerOptions) {}
 
 #[cfg(feature = "profiling")]
 fn run_profile_server(addr: SocketAddr) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
-    println!(
-        "[ProfileServer] CPU/heap endpoints at http://{addr}/debug/pprof/{{profile,flamegraph,heap}}"
+    tracing::info!(
+        profile_addr = %addr,
+        "CPU/heap endpoints at http://{addr}/debug/pprof/{{profile,flamegraph,heap}}"
     );
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 thread::spawn(|| {
                     if let Err(err) = handle_profile_connection(stream) {
-                        eprintln!("[ProfileServer] connection failed: {err}");
+                        tracing::error!(error = %err, "profile connection failed");
                     }
                 });
             }
-            Err(err) => eprintln!("[ProfileServer] accept error: {err}"),
+            Err(err) => tracing::error!(error = %err, "profile accept error"),
         }
     }
     Ok(())
@@ -372,37 +381,24 @@ fn ensure_jemalloc_profiling() {
 #[cfg(not(feature = "profiling"))]
 fn ensure_jemalloc_profiling() {}
 
-#[cfg(feature = "profiling")]
-fn profile_server_enabled() -> bool {
-    matches!(
-        env::var("PROFILE_SERVER_ENABLE")
-            .unwrap_or_default()
-            .to_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-#[cfg(not(feature = "profiling"))]
-fn profile_server_enabled() -> bool {
-    false
-}
-
 #[cfg(feature = "metrics")]
-async fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr: SocketAddr = env::var("METRICS_ADDR")
-        .unwrap_or_else(|_| DEFAULT_METRICS_ADDR.to_string())
+async fn init_metrics_exporter(
+    opts: &ServerOptions,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let addr: SocketAddr = opts
+        .metrics_addr
+        .clone()
+        .unwrap_or_else(|| DEFAULT_METRICS_ADDR.to_string())
         .parse()?;
-    println!("[synapse-flow] enabling metrics exporter at {}", addr);
+    tracing::info!(metrics_addr = %addr, "enabling metrics exporter");
     let exporter = prometheus_exporter::start(addr)?;
     // Leak exporter handle so the HTTP endpoint stays alive for the duration of the process.
     Box::leak(Box::new(exporter));
 
-    let poll_interval = env::var("METRICS_POLL_INTERVAL_SECS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
+    let poll_interval = opts
+        .metrics_poll_interval_secs
         .filter(|secs| *secs > 0)
-        .unwrap_or(5);
+        .unwrap_or(DEFAULT_METRICS_POLL_INTERVAL_SECS);
 
     spawn_tokio_metrics_collector(StdDuration::from_secs(poll_interval));
 
@@ -427,7 +423,9 @@ async fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error + Send 
 }
 
 #[cfg(not(feature = "metrics"))]
-async fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn init_metrics_exporter(
+    _opts: &ServerOptions,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 

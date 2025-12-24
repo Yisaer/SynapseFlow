@@ -21,7 +21,7 @@ impl SinkConnector for NopSinkConnector {
     }
 
     async fn ready(&mut self) -> Result<(), SinkConnectorError> {
-        println!("[NopSinkConnector:{}] ready", self.id);
+        tracing::info!(connector_id = %self.id, "nop sink ready");
         Ok(())
     }
 
@@ -30,7 +30,7 @@ impl SinkConnector for NopSinkConnector {
     }
 
     async fn close(&mut self) -> Result<(), SinkConnectorError> {
-        println!("[NopSinkConnector:{}] closed", self.id);
+        tracing::info!(connector_id = %self.id, "nop sink closed");
         Ok(())
     }
 }

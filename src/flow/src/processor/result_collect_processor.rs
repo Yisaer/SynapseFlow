@@ -76,7 +76,7 @@ impl Processor for ResultCollectProcessor {
         let broadcast_output = self.broadcast_output.clone();
         let broadcast_control_output = self.broadcast_control_output.clone();
         let processor_id = self.id.clone();
-        println!("[ResultCollectProcessor:{processor_id}] starting");
+        tracing::info!(processor_id = %processor_id, "result collect processor starting");
 
         tokio::spawn(async move {
             let output = match output {
@@ -92,14 +92,17 @@ impl Processor for ResultCollectProcessor {
                             // Forward control signal to broadcast
                             let _ = broadcast_control_output.send(control_signal.clone());
                             if control_signal.is_terminal() {
-                                println!("[ResultCollectProcessor:{}] received StreamEnd (control)", processor_id);
+                                tracing::info!(
+                                    processor_id = %processor_id,
+                                    "received StreamEnd (control)"
+                                );
                                 let stream_end = StreamData::stream_end();
                                 let _ = broadcast_output.send(stream_end.clone());
                                 output
                                     .send(stream_end)
                                     .await
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
-                                println!("[ResultCollectProcessor:{}] stopped", processor_id);
+                                tracing::info!(processor_id = %processor_id, "stopped");
                                 return Ok(());
                             }
                             continue;
@@ -120,7 +123,10 @@ impl Processor for ResultCollectProcessor {
                                     .await
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
                                 if is_terminal {
-                                    println!("[ResultCollectProcessor:{}] received StreamEnd (data)", processor_id);
+                                    tracing::info!(
+                                        processor_id = %processor_id,
+                                        "received StreamEnd (data)"
+                                    );
                                     return Ok(());
                                 }
                             }
@@ -129,9 +135,10 @@ impl Processor for ResultCollectProcessor {
                                     "ResultCollectProcessor input lagged by {} messages",
                                     skipped
                                 );
-                                println!(
-                                    "[ResultCollectProcessor:{}] input lagged by {} messages",
-                                    processor_id, skipped
+                                tracing::warn!(
+                                    processor_id = %processor_id,
+                                    skipped = skipped,
+                                    "input lagged"
                                 );
                                 let error_data = StreamData::error(
                                     StreamError::new(message)
@@ -151,7 +158,7 @@ impl Processor for ResultCollectProcessor {
                                     .send(stream_end)
                                     .await
                                     .map_err(|_| ProcessorError::ChannelClosed)?;
-                                println!("[ResultCollectProcessor:{}] stopped", processor_id);
+                                tracing::info!(processor_id = %processor_id, "stopped");
                                 return Ok(());
                             }
                         }

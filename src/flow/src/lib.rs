@@ -182,7 +182,7 @@ fn build_physical_plan_from_sql(
         registries.aggregate_registry(),
     );
     let explain = PipelineExplain::new(Arc::clone(&logical_plan), Arc::clone(&optimized_plan));
-    println!("[Pipeline Explain]\n{}", explain.to_pretty_string());
+    tracing::info!(explain = %explain.to_pretty_string(), "pipeline explain");
     Ok(optimized_plan)
 }
 
@@ -273,7 +273,7 @@ pub fn create_pipeline(
     mqtt_client_manager: MqttClientManager,
     registries: &PipelineRegistries,
 ) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
-    println!("create pipeline sql:{}", sql);
+    tracing::info!(sql = sql, "create pipeline");
     let physical_plan =
         build_physical_plan_from_sql(sql, sinks, catalog, shared_stream_registry, registries)?;
     let pipeline = create_processor_pipeline(

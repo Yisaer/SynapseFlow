@@ -85,7 +85,7 @@ impl Processor for ProjectProcessor {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
         let fields = self.physical_project.fields.clone();
-        println!("[ProjectProcessor:{id}] starting");
+        tracing::info!(processor_id = %id, "project processor starting");
 
         tokio::spawn(async move {
             loop {
@@ -96,8 +96,8 @@ impl Processor for ProjectProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                println!("[ProjectProcessor:{id}] received StreamEnd (control)");
-                                println!("[ProjectProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "received StreamEnd (control)");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                             continue;
@@ -127,8 +127,8 @@ impl Processor for ProjectProcessor {
                                 let is_terminal = data.is_terminal();
                                 send_with_backpressure(&output, data).await?;
                                 if is_terminal {
-                                    println!("[ProjectProcessor:{id}] received StreamEnd (data)");
-                                    println!("[ProjectProcessor:{id}] stopped");
+                                    tracing::info!(processor_id = %id, "received StreamEnd (data)");
+                                    tracing::info!(processor_id = %id, "stopped");
                                     return Ok(());
                                 }
                             }
@@ -137,12 +137,12 @@ impl Processor for ProjectProcessor {
                                     "ProjectProcessor input lagged by {} messages",
                                     skipped
                                 );
-                                println!("[ProjectProcessor:{id}] input lagged by {skipped} messages");
+                                tracing::warn!(processor_id = %id, skipped = skipped, "input lagged");
                                 forward_error(&output, &id, message).await?;
                                 continue;
                             }
                             None => {
-                                println!("[ProjectProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                         }

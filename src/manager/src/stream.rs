@@ -269,7 +269,7 @@ pub async fn create_stream_handler(
 
     match state.instance.create_stream(definition, req.shared).await {
         Ok(info) => {
-            println!("[manager] stream {} created", req.name);
+            tracing::info!(stream_name = %req.name, "stream created");
             (StatusCode::CREATED, Json(build_stream_info(info))).into_response()
         }
         Err(err) => {

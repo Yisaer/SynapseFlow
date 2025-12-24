@@ -17,14 +17,21 @@ Run the server (defaults to metrics + profiling features):
 cargo run --bin synapse-flow -- --data-dir ./tmp/data
 ```
 Flags:
-- `--enable-profiling` / `--disable-profiling` override `PROFILE_SERVER_ENABLE`.
 - `--data-dir <path>` sets where metadata is stored (default `./tmp`).
+- `--config <path>` loads a YAML config (defaults to optional `./config.yaml`).
 
-Environment:
-- `MANAGER_ADDR` (default `0.0.0.0:8080`) REST API bind address.
-- `METRICS_ADDR` (default `0.0.0.0:9898`) Prometheus endpoint when `metrics` feature is on.
-- `METRICS_POLL_INTERVAL_SECS` (default `5`) system metrics cadence.
-- `PROFILE_SERVER_ENABLE` (`true`/`false`) enables profiling HTTP endpoints; `PROFILE_ADDR` defaults to `0.0.0.0:6060`.
+Config (`config.yaml`):
+```yaml
+profiling:
+  enabled: true
+  addr: "0.0.0.0:6060"
+metrics:
+  addr: "0.0.0.0:9898"
+  poll_interval_secs: 5
+server:
+  manager_addr: "0.0.0.0:8080"
+```
+Precedence: CLI flags > `config.yaml` > built-in defaults.
 
 ## Managing streams and pipelines
 The manager exposes HTTP endpoints once the server is running.

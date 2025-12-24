@@ -13,56 +13,62 @@ use tokio_stream::wrappers::BroadcastStream;
 
 /// Log received StreamData for debugging
 pub fn log_received_data(processor_id: &str, data: &StreamData) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
     match data {
         StreamData::Collection(collection) => {
-            println!(
-                "[Processor:{}] received Collection: {} rows",
-                processor_id,
-                collection.num_rows()
+            tracing::debug!(
+                processor_id = %processor_id,
+                rows = collection.num_rows(),
+                "received collection"
             );
             // Print first few rows for debugging
             let rows = collection.rows();
             for (i, row) in rows.iter().take(3).enumerate() {
-                println!("  Row {}: {:?}", i, row);
+                tracing::debug!(processor_id = %processor_id, row_idx = i, row = ?row, "row");
             }
             if rows.len() > 3 {
-                println!("  ... and {} more rows", rows.len() - 3);
+                tracing::debug!(
+                    processor_id = %processor_id,
+                    remaining = rows.len() - 3,
+                    "more rows"
+                );
             }
         }
         StreamData::Encoded {
             payload,
             collection,
         } => {
-            println!(
-                "[Processor:{}] received Encoded: {} rows, {} bytes",
-                processor_id,
-                collection.num_rows(),
-                payload.len()
+            tracing::debug!(
+                processor_id = %processor_id,
+                rows = collection.num_rows(),
+                bytes = payload.len(),
+                "received encoded"
             );
         }
         StreamData::Bytes(payload) => {
-            println!(
-                "[Processor:{}] received Bytes: {} bytes",
-                processor_id,
-                payload.len()
+            tracing::debug!(
+                processor_id = %processor_id,
+                bytes = payload.len(),
+                "received bytes"
             );
         }
         StreamData::Control(signal) => {
-            println!(
-                "[Processor:{}] received Control: {:?}",
-                processor_id, signal
+            tracing::debug!(
+                processor_id = %processor_id,
+                signal = ?signal,
+                "received control"
             );
         }
         StreamData::Watermark(ts) => {
-            println!(
-                "[Processor:{}] received Watermark at {:?}",
-                processor_id, ts
-            );
+            tracing::debug!(processor_id = %processor_id, ts = ?ts, "received watermark");
         }
         StreamData::Error(error) => {
-            println!(
-                "[Processor:{}] received Error: {}",
-                processor_id, error.message
+            tracing::debug!(
+                processor_id = %processor_id,
+                message = %error.message,
+                "received error"
             );
         }
     }

@@ -85,7 +85,7 @@ impl Processor for FilterProcessor {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
         let filter_expr = self.physical_filter.scalar_predicate.clone();
-        println!("[FilterProcessor:{id}] starting");
+        tracing::info!(processor_id = %id, "filter processor starting");
 
         tokio::spawn(async move {
             loop {
@@ -96,8 +96,8 @@ impl Processor for FilterProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                println!("[FilterProcessor:{id}] received StreamEnd (control)");
-                                println!("[FilterProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "received StreamEnd (control)");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                             continue;
@@ -129,8 +129,8 @@ impl Processor for FilterProcessor {
                                 let is_terminal = data.is_terminal();
                                 send_with_backpressure(&output, data).await?;
                                 if is_terminal {
-                                    println!("[FilterProcessor:{id}] received StreamEnd (data)");
-                                    println!("[FilterProcessor:{id}] stopped");
+                                    tracing::info!(processor_id = %id, "received StreamEnd (data)");
+                                    tracing::info!(processor_id = %id, "stopped");
                                     return Ok(());
                                 }
                             }
@@ -139,12 +139,12 @@ impl Processor for FilterProcessor {
                                     "FilterProcessor input lagged by {} messages",
                                     skipped
                                 );
-                                println!("[FilterProcessor:{id}] input lagged by {skipped} messages");
+                                tracing::warn!(processor_id = %id, skipped = skipped, "input lagged");
                                 forward_error(&output, &id, message).await?;
                                 continue;
                             }
                             None => {
-                                println!("[FilterProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                         }

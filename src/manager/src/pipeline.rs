@@ -241,7 +241,7 @@ pub async fn create_pipeline_handler(
 
     let snapshot = build_result.snapshot;
     {
-        println!("[manager] pipeline {} created", snapshot.definition.id());
+        tracing::info!(pipeline_id = %snapshot.definition.id(), "pipeline created");
         (
             StatusCode::CREATED,
             Json(CreatePipelineResponse {
@@ -259,7 +259,7 @@ pub async fn start_pipeline_handler(
 ) -> impl IntoResponse {
     match state.instance.start_pipeline(&id) {
         Ok(_) => {
-            println!("[manager] pipeline {} started", id);
+            tracing::info!(pipeline_id = %id, "pipeline started");
             (StatusCode::OK, format!("pipeline {id} started")).into_response()
         }
         Err(PipelineError::NotFound(_)) => {

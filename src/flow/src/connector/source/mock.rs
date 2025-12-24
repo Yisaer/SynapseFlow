@@ -47,14 +47,14 @@ impl SourceConnector for MockSourceConnector {
             .payload_rx
             .take()
             .ok_or_else(|| ConnectorError::AlreadySubscribed(self.id.clone()))?;
-        println!("[MockSourceConnector:{}] starting", self.id);
+        tracing::info!(connector_id = %self.id, "mock source starting");
 
         Ok(Box::pin(ReceiverStream::new(receiver)))
     }
 
     fn close(&mut self) -> Result<(), ConnectorError> {
         self.payload_rx = None;
-        println!("[MockSourceConnector:{}] closed", self.id);
+        tracing::info!(connector_id = %self.id, "mock source closed");
         Ok(())
     }
 }
