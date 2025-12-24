@@ -1,6 +1,7 @@
 //! DecoderProcessor - decodes StreamData::Bytes into StreamData::Collection.
 
 use crate::codec::RecordDecoder;
+use crate::eventtime::{EventtimeParseError, EventtimeTypeParser};
 use crate::processor::base::{
     fan_in_control_streams, fan_in_streams, forward_error, log_received_data,
     send_control_with_backpressure, send_with_backpressure, DEFAULT_CHANNEL_CAPACITY,
@@ -8,8 +9,18 @@ use crate::processor::base::{
 use crate::processor::{ControlSignal, Processor, ProcessorError, StreamData};
 use futures::stream::StreamExt;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+
+#[derive(Clone)]
+pub struct EventtimeDecodeConfig {
+    pub source_name: String,
+    pub column_name: String,
+    pub column_index: usize,
+    pub type_key: String,
+    pub parser: Arc<dyn EventtimeTypeParser>,
+}
 
 pub struct DecoderProcessor {
     id: String,
@@ -19,6 +30,7 @@ pub struct DecoderProcessor {
     control_output: broadcast::Sender<ControlSignal>,
     decoder: Arc<dyn RecordDecoder>,
     projection: Option<Arc<std::sync::RwLock<Vec<String>>>>,
+    eventtime: Option<EventtimeDecodeConfig>,
 }
 
 impl DecoderProcessor {
@@ -38,11 +50,17 @@ impl DecoderProcessor {
             control_output,
             decoder,
             projection: None,
+            eventtime: None,
         }
     }
 
     pub fn with_projection(mut self, projection: Arc<std::sync::RwLock<Vec<String>>>) -> Self {
         self.projection = Some(projection);
+        self
+    }
+
+    pub fn with_eventtime(mut self, eventtime: EventtimeDecodeConfig) -> Self {
+        self.eventtime = Some(eventtime);
         self
     }
 }
@@ -57,6 +75,7 @@ impl Processor for DecoderProcessor {
         let control_output = self.control_output.clone();
         let decoder = Arc::clone(&self.decoder);
         let projection = self.projection.clone();
+        let eventtime = self.eventtime.clone();
         let processor_id = self.id.clone();
         let base_inputs = std::mem::take(&mut self.inputs);
         let mut input_streams = fan_in_streams(base_inputs);
@@ -99,7 +118,15 @@ impl Processor for DecoderProcessor {
                                     };
                                     match decoded {
                                         Ok(batch) => {
-                                            data = StreamData::collection(Box::new(batch));
+                                            let result = apply_eventtime(batch, &eventtime);
+                                            for err in result.errors {
+                                                forward_error(&output, &processor_id, err).await?;
+                                            }
+                                            if let Some(batch) = result.batch {
+                                                data = StreamData::collection(Box::new(batch));
+                                            } else {
+                                                continue;
+                                            }
                                         }
                                         Err(err) => {
                                             let message = format!("decode error: {}", err);
@@ -149,4 +176,72 @@ impl Processor for DecoderProcessor {
     fn add_control_input(&mut self, receiver: broadcast::Receiver<ControlSignal>) {
         self.control_inputs.push(receiver);
     }
+}
+
+struct EventtimeApplyResult {
+    batch: Option<crate::model::RecordBatch>,
+    errors: Vec<String>,
+}
+
+fn apply_eventtime(
+    batch: crate::model::RecordBatch,
+    cfg: &Option<EventtimeDecodeConfig>,
+) -> EventtimeApplyResult {
+    let Some(cfg) = cfg else {
+        return EventtimeApplyResult {
+            batch: Some(batch),
+            errors: Vec::new(),
+        };
+    };
+
+    let mut errors = Vec::new();
+    let mut rows = batch.into_rows();
+    rows.retain_mut(|tuple| match extract_timestamp(tuple, cfg) {
+        Ok(ts) => {
+            tuple.timestamp = ts;
+            true
+        }
+        Err(err) => {
+            errors.push(format!(
+                "eventtime parse error: source={}, column={}, type={}, {}",
+                cfg.source_name, cfg.column_name, cfg.type_key, err
+            ));
+            false
+        }
+    });
+
+    if rows.is_empty() {
+        return EventtimeApplyResult {
+            batch: None,
+            errors,
+        };
+    }
+    match crate::model::RecordBatch::new(rows) {
+        Ok(batch) => EventtimeApplyResult {
+            batch: Some(batch),
+            errors,
+        },
+        Err(err) => {
+            errors.push(format!("eventtime batch build error: {err}"));
+            EventtimeApplyResult {
+                batch: None,
+                errors,
+            }
+        }
+    }
+}
+
+fn extract_timestamp(
+    tuple: &crate::model::Tuple,
+    cfg: &EventtimeDecodeConfig,
+) -> Result<SystemTime, EventtimeParseError> {
+    let value = tuple
+        .value_by_index(cfg.source_name.as_str(), cfg.column_index)
+        .ok_or_else(|| {
+            EventtimeParseError::new(format!(
+                "eventtime column `{}` (index={}) missing in tuple",
+                cfg.column_name, cfg.column_index
+            ))
+        })?;
+    cfg.parser.parse(value)
 }

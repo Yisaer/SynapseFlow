@@ -49,6 +49,16 @@ pub struct CreatePipelineRequest {
 pub struct PipelineOptionsRequest {
     #[serde(rename = "plan_cache")]
     pub plan_cache: PlanCacheOptionsRequest,
+    #[serde(default)]
+    pub eventtime: EventtimeOptionsRequest,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone)]
+#[serde(default)]
+pub struct EventtimeOptionsRequest {
+    pub enabled: bool,
+    #[serde(rename = "lateTolerance")]
+    pub late_tolerance_ms: u64,
 }
 
 #[derive(Deserialize, Serialize, Default, Clone)]
@@ -399,6 +409,10 @@ pub(crate) fn build_pipeline_definition(
     let options = PipelineOptions {
         plan_cache: PlanCacheOptions {
             enabled: req.options.plan_cache.enabled,
+        },
+        eventtime: flow::pipeline::EventtimeOptions {
+            enabled: req.options.eventtime.enabled,
+            late_tolerance: Duration::from_millis(req.options.eventtime.late_tolerance_ms),
         },
     };
     Ok(PipelineDefinition::new(req.id.clone(), req.sql.clone(), sinks).with_options(options))

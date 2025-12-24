@@ -74,6 +74,31 @@ pub struct StreamDefinition {
     schema: Arc<Schema>,
     props: StreamProps,
     decoder: StreamDecoderConfig,
+    eventtime: Option<EventtimeDefinition>,
+}
+
+/// Event-time configuration for a stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventtimeDefinition {
+    column: String,
+    eventtime_type: String,
+}
+
+impl EventtimeDefinition {
+    pub fn new(column: impl Into<String>, eventtime_type: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            eventtime_type: eventtime_type.into(),
+        }
+    }
+
+    pub fn column(&self) -> &str {
+        &self.column
+    }
+
+    pub fn eventtime_type(&self) -> &str {
+        &self.eventtime_type
+    }
 }
 
 impl StreamDefinition {
@@ -93,7 +118,13 @@ impl StreamDefinition {
             schema,
             props,
             decoder,
+            eventtime: None,
         }
+    }
+
+    pub fn with_eventtime(mut self, eventtime: EventtimeDefinition) -> Self {
+        self.eventtime = Some(eventtime);
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -114,6 +145,10 @@ impl StreamDefinition {
 
     pub fn decoder(&self) -> &StreamDecoderConfig {
         &self.decoder
+    }
+
+    pub fn eventtime(&self) -> Option<&EventtimeDefinition> {
+        self.eventtime.as_ref()
     }
 }
 

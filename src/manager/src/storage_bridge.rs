@@ -2,6 +2,7 @@ use crate::pipeline::{CreatePipelineRequest, build_pipeline_definition};
 use crate::stream::{
     CreateStreamRequest, build_schema_from_request, build_stream_decoder, build_stream_props,
 };
+use flow::catalog::EventtimeDefinition;
 use flow::catalog::StreamDefinition;
 use flow::connector::SharedMqttClientConfig;
 use flow::pipeline::PipelineDefinition;
@@ -71,12 +72,14 @@ pub fn stream_definition_from_stored(
     let schema = build_schema_from_request(&req)?;
     let props = build_stream_props(&req.stream_type, &req.props)?;
     let decoder = build_stream_decoder(&req, decoder_registry)?;
-    Ok(StreamDefinition::new(
-        req.name.clone(),
-        Arc::new(schema),
-        props,
-        decoder,
-    ))
+    let mut definition = StreamDefinition::new(req.name.clone(), Arc::new(schema), props, decoder);
+    if let Some(cfg) = &req.eventtime {
+        definition = definition.with_eventtime(EventtimeDefinition::new(
+            cfg.column.clone(),
+            cfg.eventtime_type.clone(),
+        ));
+    }
+    Ok(definition)
 }
 
 /// Serialize a create-pipeline request for storage.
@@ -234,6 +237,7 @@ mod tests {
             props: crate::stream::StreamPropsRequest::default(),
             shared: false,
             decoder: crate::stream::DecoderConfigRequest::default(),
+            eventtime: None,
         }
     }
 

@@ -164,6 +164,7 @@ pub fn create_logical_plan(
             definition.decoder().clone(),
             current_index,
             schema,
+            definition.eventtime().cloned(),
         );
         current_plans.push(Arc::new(LogicalPlan::DataSource(datasource)));
         current_index += 1;

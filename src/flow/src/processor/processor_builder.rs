@@ -9,6 +9,8 @@ use crate::connector::{ConnectorRegistry, MqttClientManager};
 use crate::expr::scalar::ColumnRef;
 use crate::expr::ScalarExpr;
 use crate::planner::physical::PhysicalPlan;
+use crate::processor::decoder_processor::EventtimeDecodeConfig;
+use crate::processor::EventtimePipelineContext;
 use crate::processor::{
     AggregationProcessor, BatchProcessor, ControlSignal, ControlSourceProcessor,
     DataSourceProcessor, DecoderProcessor, EncoderProcessor, FilterProcessor, Processor,
@@ -66,25 +68,25 @@ pub enum PlanProcessor {
 }
 
 #[derive(Clone)]
-struct ProcessorBuilderContext {
+pub struct ProcessorPipelineDependencies {
     mqtt_clients: MqttClientManager,
     connector_registry: Arc<ConnectorRegistry>,
     encoder_registry: Arc<EncoderRegistry>,
     decoder_registry: Arc<DecoderRegistry>,
     aggregate_registry: Arc<AggregateFunctionRegistry>,
     stateful_registry: Arc<StatefulFunctionRegistry>,
-    shared_source_required_columns: HashMap<String, Vec<String>>,
+    eventtime: Option<EventtimePipelineContext>,
 }
 
-impl ProcessorBuilderContext {
-    fn new(
+impl ProcessorPipelineDependencies {
+    pub fn new(
         mqtt_clients: MqttClientManager,
         connector_registry: Arc<ConnectorRegistry>,
         encoder_registry: Arc<EncoderRegistry>,
         decoder_registry: Arc<DecoderRegistry>,
         aggregate_registry: Arc<AggregateFunctionRegistry>,
         stateful_registry: Arc<StatefulFunctionRegistry>,
-        shared_source_required_columns: HashMap<String, Vec<String>>,
+        eventtime: Option<EventtimePipelineContext>,
     ) -> Self {
         Self {
             mqtt_clients,
@@ -93,10 +95,24 @@ impl ProcessorBuilderContext {
             decoder_registry,
             aggregate_registry,
             stateful_registry,
-            shared_source_required_columns,
+            eventtime,
         }
     }
+}
 
+#[derive(Clone)]
+struct ProcessorBuilderContext {
+    mqtt_clients: MqttClientManager,
+    connector_registry: Arc<ConnectorRegistry>,
+    encoder_registry: Arc<EncoderRegistry>,
+    decoder_registry: Arc<DecoderRegistry>,
+    aggregate_registry: Arc<AggregateFunctionRegistry>,
+    stateful_registry: Arc<StatefulFunctionRegistry>,
+    shared_source_required_columns: HashMap<String, Vec<String>>,
+    eventtime: Option<EventtimePipelineContext>,
+}
+
+impl ProcessorBuilderContext {
     fn mqtt_clients_ref(&self) -> &MqttClientManager {
         &self.mqtt_clients
     }
@@ -125,6 +141,10 @@ impl ProcessorBuilderContext {
         self.shared_source_required_columns
             .get(source_name)
             .cloned()
+    }
+
+    fn eventtime(&self) -> Option<EventtimePipelineContext> {
+        self.eventtime.clone()
     }
 }
 
@@ -673,7 +693,27 @@ fn create_processor_from_plan_node(
                     Arc::clone(&schema),
                 )
                 .map_err(|err| ProcessorError::InvalidConfiguration(err.to_string()))?;
-            let processor = DecoderProcessor::new(plan_name.clone(), decoder);
+            let mut processor = DecoderProcessor::new(plan_name.clone(), decoder);
+            if let (Some(eventtime_ctx), Some(eventtime_spec)) =
+                (context.eventtime(), decoder_plan.eventtime())
+            {
+                let parser = eventtime_ctx
+                    .registry
+                    .resolve(eventtime_spec.type_key.as_str())
+                    .map_err(|err| {
+                        ProcessorError::InvalidConfiguration(format!(
+                            "eventtime.type `{}` not registered: {}",
+                            eventtime_spec.type_key, err
+                        ))
+                    })?;
+                processor = processor.with_eventtime(EventtimeDecodeConfig {
+                    source_name: decoder_plan.source_name().to_string(),
+                    column_name: eventtime_spec.column_name.clone(),
+                    column_index: eventtime_spec.column_index,
+                    type_key: eventtime_spec.type_key.clone(),
+                    parser,
+                });
+            }
             Ok(ProcessorBuildOutput::with_processor(
                 PlanProcessor::Decoder(processor),
             ))
@@ -765,7 +805,7 @@ fn create_processor_from_plan_node(
                 PlanProcessor::StreamingEncoder(processor),
             ))
         }
-        PhysicalPlan::Watermark(_) => {
+        PhysicalPlan::ProcessTimeWatermark(_) | PhysicalPlan::EventtimeWatermark(_) => {
             let processor =
                 WatermarkProcessor::from_physical_plan(plan_name.clone(), Arc::clone(plan))
                     .ok_or_else(|| {
@@ -777,6 +817,9 @@ fn create_processor_from_plan_node(
                 PlanProcessor::Watermark(processor),
             ))
         }
+        PhysicalPlan::Watermark(_) => Err(ProcessorError::InvalidConfiguration(
+            "PhysicalWatermark is deprecated; use PhysicalProcessTimeWatermark".to_string(),
+        )),
         PhysicalPlan::CountWindow(count_window) => {
             let processor =
                 BatchProcessor::new(plan_name.clone(), Some(count_window.count as usize), None);
@@ -1070,12 +1113,7 @@ fn connect_processors(
 /// carries the declarative sink configuration.
 pub fn create_processor_pipeline(
     physical_plan: Arc<PhysicalPlan>,
-    mqtt_clients: MqttClientManager,
-    connector_registry: Arc<ConnectorRegistry>,
-    encoder_registry: Arc<EncoderRegistry>,
-    decoder_registry: Arc<DecoderRegistry>,
-    aggregate_registry: Arc<AggregateFunctionRegistry>,
-    stateful_registry: Arc<StatefulFunctionRegistry>,
+    dependencies: ProcessorPipelineDependencies,
 ) -> Result<ProcessorPipeline, ProcessorError> {
     let mut control_source = ControlSourceProcessor::new("control_source");
     let (pipeline_input_sender, pipeline_input_receiver) = mpsc::channel(100);
@@ -1088,15 +1126,16 @@ pub fn create_processor_pipeline(
 
     let mut processor_map = ProcessorMap::new();
     let shared_required_columns = compute_shared_required_columns(physical_plan.as_ref());
-    let context = ProcessorBuilderContext::new(
-        mqtt_clients,
-        connector_registry,
-        encoder_registry,
-        decoder_registry,
-        aggregate_registry,
-        stateful_registry,
-        shared_required_columns,
-    );
+    let context = ProcessorBuilderContext {
+        mqtt_clients: dependencies.mqtt_clients,
+        connector_registry: dependencies.connector_registry,
+        encoder_registry: dependencies.encoder_registry,
+        decoder_registry: dependencies.decoder_registry,
+        aggregate_registry: dependencies.aggregate_registry,
+        stateful_registry: dependencies.stateful_registry,
+        shared_source_required_columns: shared_required_columns,
+        eventtime: dependencies.eventtime,
+    };
     build_processors_recursive(Arc::clone(&physical_plan), &mut processor_map, &context)?;
 
     connect_processors(
@@ -1170,6 +1209,7 @@ mod tests {
             "test_source".to_string(),
             StreamDecoderConfig::json(),
             Arc::clone(&schema),
+            None,
             vec![data_source],
             1,
         )));
@@ -1197,15 +1237,16 @@ mod tests {
         let decoder_registry = DecoderRegistry::with_builtin_decoders();
         let aggregate_registry = AggregateFunctionRegistry::with_builtins();
         let stateful_registry = StatefulFunctionRegistry::with_builtins();
-        let context = ProcessorBuilderContext::new(
-            MqttClientManager::new(),
+        let context = ProcessorBuilderContext {
+            mqtt_clients: MqttClientManager::new(),
             connector_registry,
             encoder_registry,
             decoder_registry,
             aggregate_registry,
             stateful_registry,
-            HashMap::new(),
-        );
+            shared_source_required_columns: HashMap::new(),
+            eventtime: None,
+        };
         let result = create_processor_from_plan_node(&physical_project, &context)
             .expect("processor creation failed");
 

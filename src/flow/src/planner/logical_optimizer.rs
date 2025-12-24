@@ -20,7 +20,23 @@ pub fn optimize_logical_plan(
     logical_plan: Arc<LogicalPlan>,
     bindings: &SchemaBinding,
 ) -> (Arc<LogicalPlan>, SchemaBinding) {
-    let rules: Vec<Box<dyn LogicalOptRule>> = vec![Box::new(ColumnPruning)];
+    optimize_logical_plan_with_options(logical_plan, bindings, &LogicalOptimizerOptions::default())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LogicalOptimizerOptions {
+    pub eventtime_enabled: bool,
+}
+
+/// Apply logical plan optimizations with extra options (e.g. eventtime).
+pub fn optimize_logical_plan_with_options(
+    logical_plan: Arc<LogicalPlan>,
+    bindings: &SchemaBinding,
+    options: &LogicalOptimizerOptions,
+) -> (Arc<LogicalPlan>, SchemaBinding) {
+    let rules: Vec<Box<dyn LogicalOptRule>> = vec![Box::new(ColumnPruning {
+        eventtime_enabled: options.eventtime_enabled,
+    })];
 
     let mut current_plan = logical_plan;
     let mut current_bindings = bindings.clone();
@@ -39,7 +55,9 @@ pub fn optimize_logical_plan(
 /// Traverses the logical plan expressions to find which source columns are
 /// referenced and constructs a pruned SchemaBinding. Logical plan topology is
 /// kept as-is; only the bindings (and thus physical DataSource schemas) change.
-struct ColumnPruning;
+struct ColumnPruning {
+    eventtime_enabled: bool,
+}
 
 impl LogicalOptRule for ColumnPruning {
     fn name(&self) -> &str {
@@ -51,7 +69,7 @@ impl LogicalOptRule for ColumnPruning {
         plan: Arc<LogicalPlan>,
         bindings: &SchemaBinding,
     ) -> (Arc<LogicalPlan>, SchemaBinding) {
-        let mut collector = ColumnUsageCollector::new(bindings);
+        let mut collector = ColumnUsageCollector::new(bindings, self.eventtime_enabled);
         collector.collect_from_plan(plan.as_ref());
         let pruned = collector.build_pruned_binding();
         let updated_plan = apply_pruned_schemas_to_logical(plan, &pruned);
@@ -66,14 +84,16 @@ struct ColumnUsageCollector<'a> {
     used_columns: HashMap<String, HashSet<String>>,
     /// Sources for which pruning is disabled (e.g., wildcard or ambiguous)
     prune_disabled: HashSet<String>,
+    eventtime_enabled: bool,
 }
 
 impl<'a> ColumnUsageCollector<'a> {
-    fn new(bindings: &'a SchemaBinding) -> Self {
+    fn new(bindings: &'a SchemaBinding, eventtime_enabled: bool) -> Self {
         Self {
             bindings,
             used_columns: HashMap::new(),
             prune_disabled: HashSet::new(),
+            eventtime_enabled,
         }
     }
 
@@ -114,7 +134,16 @@ impl<'a> ColumnUsageCollector<'a> {
                     }
                 }
             }
-            LogicalPlan::DataSource(_) => {}
+            LogicalPlan::DataSource(ds) => {
+                if self.eventtime_enabled {
+                    if let Some(eventtime) = ds.eventtime() {
+                        self.used_columns
+                            .entry(ds.source_name.clone())
+                            .or_default()
+                            .insert(eventtime.column().to_string());
+                    }
+                }
+            }
             LogicalPlan::DataSink(_) => {}
             LogicalPlan::Tail(TailPlan { .. }) => {}
         }

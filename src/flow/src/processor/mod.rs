@@ -14,6 +14,7 @@ pub mod control_source_processor;
 pub mod datasource_processor;
 pub mod decoder_processor;
 pub mod encoder_processor;
+pub mod eventtime;
 pub mod filter_processor;
 pub mod processor_builder;
 pub mod project_processor;
@@ -36,8 +37,11 @@ pub use control_source_processor::ControlSourceProcessor;
 pub use datasource_processor::DataSourceProcessor;
 pub use decoder_processor::DecoderProcessor;
 pub use encoder_processor::EncoderProcessor;
+pub use eventtime::EventtimePipelineContext;
 pub use filter_processor::FilterProcessor;
-pub use processor_builder::{create_processor_pipeline, ProcessorPipeline};
+pub use processor_builder::{
+    create_processor_pipeline, ProcessorPipeline, ProcessorPipelineDependencies,
+};
 pub use project_processor::ProjectProcessor;
 pub use result_collect_processor::ResultCollectProcessor;
 pub use shared_stream_processor::SharedStreamProcessor;

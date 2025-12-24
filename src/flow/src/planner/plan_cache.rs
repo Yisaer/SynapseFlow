@@ -315,6 +315,7 @@ fn build_logical_plan_node(
                 decoder,
                 node.index,
                 schema,
+                None,
             );
             Arc::new(LogicalPlan::DataSource(datasource))
         }

@@ -7,7 +7,9 @@ pub mod physical_data_sink;
 pub mod physical_data_source;
 pub mod physical_decoder;
 pub mod physical_encoder;
+pub mod physical_eventtime_watermark;
 pub mod physical_filter;
+pub mod physical_process_time_watermark;
 pub mod physical_project;
 pub mod physical_result_collect;
 pub mod physical_shared_stream;
@@ -23,8 +25,11 @@ pub use physical_batch::PhysicalBatch;
 pub use physical_data_sink::{PhysicalDataSink, PhysicalSinkConnector};
 pub use physical_data_source::PhysicalDataSource;
 pub use physical_decoder::PhysicalDecoder;
+pub use physical_decoder::PhysicalDecoderEventtimeSpec;
 pub use physical_encoder::PhysicalEncoder;
+pub use physical_eventtime_watermark::PhysicalEventtimeWatermark;
 pub use physical_filter::PhysicalFilter;
+pub use physical_process_time_watermark::PhysicalProcessTimeWatermark;
 pub use physical_project::{PhysicalProject, PhysicalProjectField};
 pub use physical_result_collect::PhysicalResultCollect;
 pub use physical_shared_stream::PhysicalSharedStream;
@@ -57,6 +62,11 @@ pub enum PhysicalPlan {
     CountWindow(PhysicalCountWindow),
     SlidingWindow(PhysicalSlidingWindow),
     StateWindow(Box<PhysicalStateWindow>),
+    /// Processing-time watermark physical node (ticker-based).
+    ProcessTimeWatermark(PhysicalProcessTimeWatermark),
+    /// Event-time watermark physical node (data-driven).
+    EventtimeWatermark(PhysicalEventtimeWatermark),
+    /// Back-compat (deprecated).
     Watermark(PhysicalWatermark),
 }
 
@@ -81,6 +91,8 @@ impl PhysicalPlan {
             PhysicalPlan::CountWindow(plan) => plan.base.children(),
             PhysicalPlan::SlidingWindow(plan) => plan.base.children(),
             PhysicalPlan::StateWindow(plan) => plan.base.children(),
+            PhysicalPlan::ProcessTimeWatermark(plan) => plan.base.children(),
+            PhysicalPlan::EventtimeWatermark(plan) => plan.base.children(),
             PhysicalPlan::Watermark(plan) => plan.base.children(),
         }
     }
@@ -105,6 +117,8 @@ impl PhysicalPlan {
             PhysicalPlan::CountWindow(_) => "PhysicalCountWindow",
             PhysicalPlan::SlidingWindow(_) => "PhysicalSlidingWindow",
             PhysicalPlan::StateWindow(_) => "PhysicalStateWindow",
+            PhysicalPlan::ProcessTimeWatermark(_) => "PhysicalProcessTimeWatermark",
+            PhysicalPlan::EventtimeWatermark(_) => "PhysicalEventtimeWatermark",
             PhysicalPlan::Watermark(_) => "PhysicalWatermark",
         }
     }
@@ -129,6 +143,8 @@ impl PhysicalPlan {
             PhysicalPlan::CountWindow(plan) => plan.base.index(),
             PhysicalPlan::SlidingWindow(plan) => plan.base.index(),
             PhysicalPlan::StateWindow(plan) => plan.base.index(),
+            PhysicalPlan::ProcessTimeWatermark(plan) => plan.base.index(),
+            PhysicalPlan::EventtimeWatermark(plan) => plan.base.index(),
             PhysicalPlan::Watermark(plan) => plan.base.index(),
         }
     }
@@ -151,5 +167,53 @@ impl PhysicalPlan {
         for child in self.children() {
             child.print_topology(indent + 1);
         }
+    }
+
+    fn children_mut(&mut self) -> &mut Vec<Arc<PhysicalPlan>> {
+        match self {
+            PhysicalPlan::DataSource(plan) => &mut plan.base.children,
+            PhysicalPlan::Decoder(plan) => &mut plan.base.children,
+            PhysicalPlan::StatefulFunction(plan) => &mut plan.base.children,
+            PhysicalPlan::Filter(plan) => &mut plan.base.children,
+            PhysicalPlan::Project(plan) => &mut plan.base.children,
+            PhysicalPlan::Aggregation(plan) => &mut plan.base.children,
+            PhysicalPlan::SharedStream(plan) => &mut plan.base.children,
+            PhysicalPlan::Batch(plan) => &mut plan.base.children,
+            PhysicalPlan::DataSink(plan) => &mut plan.base.children,
+            PhysicalPlan::Encoder(plan) => &mut plan.base.children,
+            PhysicalPlan::StreamingAggregation(plan) => &mut plan.base.children,
+            PhysicalPlan::StreamingEncoder(plan) => &mut plan.base.children,
+            PhysicalPlan::ResultCollect(plan) => &mut plan.base.children,
+            PhysicalPlan::TumblingWindow(plan) => &mut plan.base.children,
+            PhysicalPlan::CountWindow(plan) => &mut plan.base.children,
+            PhysicalPlan::SlidingWindow(plan) => &mut plan.base.children,
+            PhysicalPlan::StateWindow(plan) => &mut plan.base.children,
+            PhysicalPlan::ProcessTimeWatermark(plan) => &mut plan.base.children,
+            PhysicalPlan::EventtimeWatermark(plan) => &mut plan.base.children,
+            PhysicalPlan::Watermark(plan) => &mut plan.base.children,
+        }
+    }
+}
+
+pub fn rewrite_watermark_strategy(plan: &mut Arc<PhysicalPlan>, strategy: WatermarkStrategy) {
+    let plan_mut = Arc::make_mut(plan);
+    for child in plan_mut.children_mut() {
+        rewrite_watermark_strategy(child, strategy.clone());
+    }
+
+    match plan_mut {
+        PhysicalPlan::ProcessTimeWatermark(watermark) => match &mut watermark.config {
+            WatermarkConfig::Tumbling { strategy: s, .. } => *s = strategy,
+            WatermarkConfig::Sliding { strategy: s, .. } => *s = strategy,
+        },
+        PhysicalPlan::EventtimeWatermark(watermark) => match &mut watermark.config {
+            WatermarkConfig::Tumbling { strategy: s, .. } => *s = strategy,
+            WatermarkConfig::Sliding { strategy: s, .. } => *s = strategy,
+        },
+        PhysicalPlan::Watermark(watermark) => match &mut watermark.config {
+            WatermarkConfig::Tumbling { strategy: s, .. } => *s = strategy,
+            WatermarkConfig::Sliding { strategy: s, .. } => *s = strategy,
+        },
+        _ => {}
     }
 }

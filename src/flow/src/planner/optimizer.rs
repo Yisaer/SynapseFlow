@@ -334,6 +334,16 @@ fn rebuild_with_children(
             new.base.children = children;
             Arc::new(PhysicalPlan::TumblingWindow(new))
         }
+        PhysicalPlan::ProcessTimeWatermark(watermark) => {
+            let mut new = watermark.clone();
+            new.base.children = children;
+            Arc::new(PhysicalPlan::ProcessTimeWatermark(new))
+        }
+        PhysicalPlan::EventtimeWatermark(watermark) => {
+            let mut new = watermark.clone();
+            new.base.children = children;
+            Arc::new(PhysicalPlan::EventtimeWatermark(new))
+        }
         PhysicalPlan::Watermark(watermark) => {
             let mut new = watermark.clone();
             new.base.children = children;
@@ -515,7 +525,7 @@ mod tests {
         let pre_table = pre_explain.physical.to_json().to_string();
         assert_eq!(
             pre_table,
-            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalWatermark_2","info":["window=tumbling","unit=Seconds","length=10","mode=processing_time","interval=10"],"operator":"PhysicalWatermark"}],"id":"PhysicalTumblingWindow_3","info":["kind=tumbling","unit=Seconds","length=10"],"operator":"PhysicalTumblingWindow"}],"id":"PhysicalAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
+            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalProcessTimeWatermark_2","info":["window=tumbling","unit=Seconds","length=10","mode=processing_time","interval=10"],"operator":"PhysicalProcessTimeWatermark"}],"id":"PhysicalTumblingWindow_3","info":["kind=tumbling","unit=Seconds","length=10"],"operator":"PhysicalTumblingWindow"}],"id":"PhysicalAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
         );
 
         let optimized_plan = optimize_physical_plan(
@@ -527,7 +537,7 @@ mod tests {
         let post_table = post_explain.physical.to_json().to_string();
         assert_eq!(
             post_table,
-            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalWatermark_2","info":["window=tumbling","unit=Seconds","length=10","mode=processing_time","interval=10"],"operator":"PhysicalWatermark"}],"id":"PhysicalStreamingAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]","window=tumbling","unit=Seconds","length=10"],"operator":"PhysicalStreamingAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
+            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalProcessTimeWatermark_2","info":["window=tumbling","unit=Seconds","length=10","mode=processing_time","interval=10"],"operator":"PhysicalProcessTimeWatermark"}],"id":"PhysicalStreamingAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]","window=tumbling","unit=Seconds","length=10"],"operator":"PhysicalStreamingAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
         );
     }
 

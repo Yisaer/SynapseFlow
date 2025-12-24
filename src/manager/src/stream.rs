@@ -8,7 +8,7 @@ use axum::{
     response::IntoResponse,
 };
 use flow::DecoderRegistry;
-use flow::catalog::{CatalogError, MqttStreamProps, StreamDecoderConfig};
+use flow::catalog::{CatalogError, EventtimeDefinition, MqttStreamProps, StreamDecoderConfig};
 use flow::shared_stream::{SharedStreamError, SharedStreamInfo, SharedStreamStatus};
 use flow::{FlowInstanceError, Schema, StreamDefinition, StreamProps, StreamRuntimeInfo};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,15 @@ pub struct CreateStreamRequest {
     pub shared: bool,
     #[serde(default)]
     pub decoder: DecoderConfigRequest,
+    #[serde(default)]
+    pub eventtime: Option<EventtimeConfigRequest>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct EventtimeConfigRequest {
+    pub column: String,
+    #[serde(rename = "type")]
+    pub eventtime_type: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -264,8 +273,14 @@ pub async fn create_stream_handler(
         }
     }
 
-    let definition =
+    let mut definition =
         StreamDefinition::new(req.name.clone(), Arc::new(schema), stream_props, decoder);
+    if let Some(cfg) = &req.eventtime {
+        definition = definition.with_eventtime(EventtimeDefinition::new(
+            cfg.column.clone(),
+            cfg.eventtime_type.clone(),
+        ));
+    }
 
     match state.instance.create_stream(definition, req.shared).await {
         Ok(info) => {

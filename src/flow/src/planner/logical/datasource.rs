@@ -1,3 +1,4 @@
+use crate::catalog::EventtimeDefinition;
 use crate::catalog::StreamDecoderConfig;
 use crate::planner::logical::BaseLogicalPlan;
 use datatypes::Schema;
@@ -10,6 +11,7 @@ pub struct DataSource {
     pub alias: Option<String>,
     pub decoder: StreamDecoderConfig,
     pub schema: Arc<Schema>,
+    pub eventtime: Option<EventtimeDefinition>,
 }
 
 impl DataSource {
@@ -19,6 +21,7 @@ impl DataSource {
         decoder: StreamDecoderConfig,
         index: i64,
         schema: Arc<Schema>,
+        eventtime: Option<EventtimeDefinition>,
     ) -> Self {
         let base = BaseLogicalPlan::new(vec![], index);
         Self {
@@ -27,6 +30,7 @@ impl DataSource {
             alias,
             decoder,
             schema,
+            eventtime,
         }
     }
 
@@ -36,5 +40,9 @@ impl DataSource {
 
     pub fn schema(&self) -> Arc<Schema> {
         Arc::clone(&self.schema)
+    }
+
+    pub fn eventtime(&self) -> Option<&EventtimeDefinition> {
+        self.eventtime.as_ref()
     }
 }

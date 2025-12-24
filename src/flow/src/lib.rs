@@ -2,6 +2,7 @@ pub mod aggregation;
 pub mod catalog;
 pub mod codec;
 pub mod connector;
+pub mod eventtime;
 pub mod expr;
 pub mod instance;
 pub mod model;
@@ -13,8 +14,8 @@ pub mod stateful;
 
 pub use aggregation::AggregateFunctionRegistry;
 pub use catalog::{
-    Catalog, CatalogError, MqttStreamProps, StreamDecoderConfig, StreamDefinition, StreamProps,
-    StreamType,
+    Catalog, CatalogError, EventtimeDefinition, MqttStreamProps, StreamDecoderConfig,
+    StreamDefinition, StreamProps, StreamType,
 };
 pub use codec::{
     CodecError, CollectionEncoder, CollectionEncoderStream, DecoderRegistry, EncodeError,
@@ -24,6 +25,9 @@ pub use datatypes::{
     BooleanType, ColumnSchema, ConcreteDatatype, Float32Type, Float64Type, Int16Type, Int32Type,
     Int64Type, Int8Type, ListType, Schema, StringType, StructField, StructType, Uint16Type,
     Uint32Type, Uint64Type, Uint8Type,
+};
+pub use eventtime::{
+    BuiltinEventtimeType, EventtimeParseError, EventtimeTypeParser, EventtimeTypeRegistry,
 };
 pub use expr::custom_func::{CustomFunc, CustomFuncRegistry, CustomFuncRegistryError};
 pub use expr::sql_conversion;
@@ -60,7 +64,7 @@ pub use stateful::StatefulFunctionRegistry;
 
 use connector::{ConnectorRegistry, MqttClientManager};
 use planner::logical::create_logical_plan;
-use processor::{create_processor_pipeline, ProcessorPipeline};
+use processor::{create_processor_pipeline, ProcessorPipeline, ProcessorPipelineDependencies};
 use shared_stream::SharedStreamRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -78,6 +82,7 @@ pub struct PipelineRegistries {
     aggregate_registry: Arc<AggregateFunctionRegistry>,
     stateful_registry: Arc<StatefulFunctionRegistry>,
     custom_func_registry: Arc<CustomFuncRegistry>,
+    eventtime_type_registry: Arc<EventtimeTypeRegistry>,
 }
 
 impl PipelineRegistries {
@@ -94,6 +99,7 @@ impl PipelineRegistries {
             aggregate_registry,
             stateful_registry: StatefulFunctionRegistry::with_builtins(),
             custom_func_registry: CustomFuncRegistry::with_builtins(),
+            eventtime_type_registry: EventtimeTypeRegistry::with_builtin_types(),
         }
     }
 
@@ -111,6 +117,7 @@ impl PipelineRegistries {
             aggregate_registry,
             stateful_registry,
             custom_func_registry: CustomFuncRegistry::with_builtins(),
+            eventtime_type_registry: EventtimeTypeRegistry::with_builtin_types(),
         }
     }
 
@@ -121,6 +128,7 @@ impl PipelineRegistries {
         aggregate_registry: Arc<AggregateFunctionRegistry>,
         stateful_registry: Arc<StatefulFunctionRegistry>,
         custom_func_registry: Arc<CustomFuncRegistry>,
+        eventtime_type_registry: Arc<EventtimeTypeRegistry>,
     ) -> Self {
         Self {
             connector_registry,
@@ -129,6 +137,7 @@ impl PipelineRegistries {
             aggregate_registry,
             stateful_registry,
             custom_func_registry,
+            eventtime_type_registry,
         }
     }
 
@@ -154,6 +163,10 @@ impl PipelineRegistries {
 
     pub fn custom_func_registry(&self) -> Arc<CustomFuncRegistry> {
         Arc::clone(&self.custom_func_registry)
+    }
+
+    pub fn eventtime_type_registry(&self) -> Arc<EventtimeTypeRegistry> {
+        Arc::clone(&self.eventtime_type_registry)
     }
 }
 
@@ -278,14 +291,52 @@ pub fn create_pipeline(
         build_physical_plan_from_sql(sql, sinks, catalog, shared_stream_registry, registries)?;
     let pipeline = create_processor_pipeline(
         physical_plan,
-        mqtt_client_manager,
-        registries.connector_registry(),
-        registries.encoder_registry(),
-        registries.decoder_registry(),
-        registries.aggregate_registry(),
-        registries.stateful_registry(),
+        ProcessorPipelineDependencies::new(
+            mqtt_client_manager,
+            registries.connector_registry(),
+            registries.encoder_registry(),
+            registries.decoder_registry(),
+            registries.aggregate_registry(),
+            registries.stateful_registry(),
+            None,
+        ),
     )?;
     Ok(pipeline)
+}
+
+fn validate_eventtime_enabled(
+    stream_defs: &HashMap<String, Arc<StreamDefinition>>,
+    registries: &PipelineRegistries,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = registries.eventtime_type_registry();
+    let mut saw_eventtime = false;
+    for (stream, def) in stream_defs {
+        let Some(eventtime) = def.eventtime() else {
+            continue;
+        };
+        saw_eventtime = true;
+        let column = eventtime.column();
+        if !def.schema().contains_column(column) {
+            return Err(format!(
+                "eventtime.column `{}` not found in stream `{}` schema",
+                column, stream
+            )
+            .into());
+        }
+        let type_key = eventtime.eventtime_type();
+        if !registry.is_registered(type_key) {
+            let available = registry.list().join(", ");
+            return Err(format!(
+                "eventtime.type `{}` not registered (available: {})",
+                type_key, available
+            )
+            .into());
+        }
+    }
+    if !saw_eventtime {
+        return Err("eventtime.enabled=true but no stream declares eventtime".into());
+    }
+    Ok(())
 }
 
 pub fn explain_pipeline(
@@ -295,6 +346,24 @@ pub fn explain_pipeline(
     shared_stream_registry: &SharedStreamRegistry,
     registries: &PipelineRegistries,
 ) -> Result<PipelineExplain, Box<dyn std::error::Error>> {
+    explain_pipeline_with_options(
+        sql,
+        sinks,
+        catalog,
+        shared_stream_registry,
+        registries,
+        &crate::pipeline::PipelineOptions::default(),
+    )
+}
+
+pub fn explain_pipeline_with_options(
+    sql: &str,
+    sinks: Vec<PipelineSink>,
+    catalog: &Catalog,
+    shared_stream_registry: &SharedStreamRegistry,
+    registries: &PipelineRegistries,
+    options: &crate::pipeline::PipelineOptions,
+) -> Result<PipelineExplain, Box<dyn std::error::Error>> {
     let select_stmt = parser::parse_sql_with_registries(
         sql,
         registries.aggregate_registry(),
@@ -303,16 +372,41 @@ pub fn explain_pipeline(
     let (schema_binding, stream_defs) =
         build_schema_binding(&select_stmt, catalog, shared_stream_registry)?;
     let logical_plan = create_logical_plan(select_stmt, sinks, &stream_defs)?;
-    let (logical_plan, pruned_binding) =
-        optimize_logical_plan(Arc::clone(&logical_plan), &schema_binding);
-    let physical_plan =
-        create_physical_plan(Arc::clone(&logical_plan), &pruned_binding, registries)?;
+    let (logical_plan, pruned_binding) = crate::planner::optimize_logical_plan_with_options(
+        Arc::clone(&logical_plan),
+        &schema_binding,
+        &crate::planner::LogicalOptimizerOptions {
+            eventtime_enabled: options.eventtime.enabled,
+        },
+    );
+    if options.eventtime.enabled {
+        validate_eventtime_enabled(&stream_defs, registries)?;
+    }
+
+    let build_options = crate::planner::PhysicalPlanBuildOptions {
+        eventtime_enabled: options.eventtime.enabled,
+        eventtime_late_tolerance: options.eventtime.late_tolerance,
+    };
+    let physical_plan = crate::planner::create_physical_plan_with_build_options(
+        Arc::clone(&logical_plan),
+        &pruned_binding,
+        registries,
+        &build_options,
+    )?;
     let optimized_plan = optimize_physical_plan(
         Arc::clone(&physical_plan),
         registries.encoder_registry().as_ref(),
         registries.aggregate_registry(),
     );
-    Ok(PipelineExplain::new(logical_plan, optimized_plan))
+
+    Ok(PipelineExplain::new_with_pipeline_options(
+        crate::planner::explain::PipelineExplainOptions {
+            eventtime_enabled: options.eventtime.enabled,
+            eventtime_late_tolerance_ms: options.eventtime.late_tolerance.as_millis(),
+        },
+        logical_plan,
+        optimized_plan,
+    ))
 }
 
 /// Convenience helper for tests and demos that just need a logging mock sink.
@@ -359,6 +453,85 @@ pub fn create_pipeline_with_attached_sources(
         shared_stream_registry,
         mqtt_client_manager.clone(),
         registries,
+    )?;
+    pipeline::attach_sources_for_pipeline(&mut pipeline, catalog, &mqtt_client_manager)?;
+    Ok(pipeline)
+}
+
+/// Create a processor pipeline from SQL with pipeline options and attach source connectors from the catalog.
+///
+/// Primarily intended for tests that need to exercise option-dependent runtime behavior (e.g. event time).
+pub fn create_pipeline_with_attached_sources_with_options(
+    sql: &str,
+    sinks: Vec<PipelineSink>,
+    catalog: &Catalog,
+    shared_stream_registry: &SharedStreamRegistry,
+    mqtt_client_manager: MqttClientManager,
+    registries: &PipelineRegistries,
+    options: &crate::pipeline::PipelineOptions,
+) -> Result<ProcessorPipeline, Box<dyn std::error::Error>> {
+    let select_stmt = parser::parse_sql_with_registries(
+        sql,
+        registries.aggregate_registry(),
+        registries.stateful_registry(),
+    )?;
+    let (schema_binding, stream_defs) =
+        build_schema_binding(&select_stmt, catalog, shared_stream_registry)?;
+    let logical_plan = create_logical_plan(select_stmt, sinks, &stream_defs)?;
+    let (logical_plan, pruned_binding) = crate::planner::optimize_logical_plan_with_options(
+        Arc::clone(&logical_plan),
+        &schema_binding,
+        &crate::planner::LogicalOptimizerOptions {
+            eventtime_enabled: options.eventtime.enabled,
+        },
+    );
+    if options.eventtime.enabled {
+        validate_eventtime_enabled(&stream_defs, registries)?;
+    }
+
+    let build_options = crate::planner::PhysicalPlanBuildOptions {
+        eventtime_enabled: options.eventtime.enabled,
+        eventtime_late_tolerance: options.eventtime.late_tolerance,
+    };
+    let physical_plan = crate::planner::create_physical_plan_with_build_options(
+        Arc::clone(&logical_plan),
+        &pruned_binding,
+        registries,
+        &build_options,
+    )?;
+    let optimized_plan = optimize_physical_plan(
+        Arc::clone(&physical_plan),
+        registries.encoder_registry().as_ref(),
+        registries.aggregate_registry(),
+    );
+
+    let eventtime = if options.eventtime.enabled {
+        let mut per_source = HashMap::new();
+        for (name, def) in &stream_defs {
+            if let Some(cfg) = def.eventtime() {
+                per_source.insert(name.clone(), cfg.clone());
+            }
+        }
+        Some(crate::processor::EventtimePipelineContext {
+            enabled: true,
+            registry: registries.eventtime_type_registry(),
+            per_source,
+        })
+    } else {
+        None
+    };
+
+    let mut pipeline = create_processor_pipeline(
+        optimized_plan,
+        ProcessorPipelineDependencies::new(
+            mqtt_client_manager.clone(),
+            registries.connector_registry(),
+            registries.encoder_registry(),
+            registries.decoder_registry(),
+            registries.aggregate_registry(),
+            registries.stateful_registry(),
+            eventtime,
+        ),
     )?;
     pipeline::attach_sources_for_pipeline(&mut pipeline, catalog, &mqtt_client_manager)?;
     Ok(pipeline)

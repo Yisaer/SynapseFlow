@@ -11,6 +11,12 @@ pub struct ExplainRow {
     pub info: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PipelineExplainOptions {
+    pub eventtime_enabled: bool,
+    pub eventtime_late_tolerance_ms: u128,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExplainReport {
     pub root: ExplainNode,
@@ -68,6 +74,7 @@ impl ExplainReport {
 
 #[derive(Debug, Clone)]
 pub struct PipelineExplain {
+    pub options: Option<PipelineExplainOptions>,
     pub logical: ExplainReport,
     pub physical: ExplainReport,
 }
@@ -80,7 +87,29 @@ impl PipelineExplain {
         let physical = ExplainReport {
             root: build_physical_node(&physical_plan),
         };
-        Self { logical, physical }
+        Self {
+            options: None,
+            logical,
+            physical,
+        }
+    }
+
+    pub fn new_with_pipeline_options(
+        options: PipelineExplainOptions,
+        logical_plan: Arc<LogicalPlan>,
+        physical_plan: Arc<PhysicalPlan>,
+    ) -> Self {
+        let logical = ExplainReport {
+            root: build_logical_node(&logical_plan),
+        };
+        let physical = ExplainReport {
+            root: build_physical_node(&physical_plan),
+        };
+        Self {
+            options: Some(options),
+            logical,
+            physical,
+        }
     }
 
     pub fn to_pretty_string(&self) -> String {
@@ -94,6 +123,7 @@ impl PipelineExplain {
     /// Structured JSON view containing both logical and physical explains.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
+            "options": self.options,
             "logical": self.logical.to_json(),
             "physical": self.physical.to_json(),
         })
@@ -324,6 +354,11 @@ fn build_physical_node_with_prefix(
                 .map(|c| c.name.clone())
                 .collect();
             info.push(format!("schema=[{}]", cols.join(", ")));
+            if let Some(eventtime) = decoder.eventtime() {
+                info.push(format!("eventtime.column={}", eventtime.column_name));
+                info.push(format!("eventtime.type={}", eventtime.type_key));
+                info.push(format!("eventtime.index={}", eventtime.column_index));
+            }
         }
         PhysicalPlan::SharedStream(ds) => {
             info.push(format!("source={}", ds.stream_name()));
@@ -457,7 +492,7 @@ fn build_physical_node_with_prefix(
         PhysicalPlan::ResultCollect(rc) => {
             info.push(format!("sink_count={}", rc.base.children.len()));
         }
-        PhysicalPlan::Watermark(watermark) => match &watermark.config {
+        PhysicalPlan::ProcessTimeWatermark(watermark) => match &watermark.config {
             WatermarkConfig::Tumbling {
                 time_unit,
                 length,
@@ -471,8 +506,9 @@ fn build_physical_node_with_prefix(
                         info.push("mode=processing_time".to_string());
                         info.push(format!("interval={}", interval));
                     }
-                    WatermarkStrategy::External => {
-                        info.push("mode=external".to_string());
+                    WatermarkStrategy::EventTime { late_tolerance } => {
+                        info.push("mode=event_time".to_string());
+                        info.push(format!("lateToleranceMs={}", late_tolerance.as_millis()));
                     }
                 }
             }
@@ -494,8 +530,99 @@ fn build_physical_node_with_prefix(
                         info.push("mode=processing_time".to_string());
                         info.push(format!("interval={}", interval));
                     }
-                    WatermarkStrategy::External => {
-                        info.push("mode=external".to_string());
+                    WatermarkStrategy::EventTime { late_tolerance } => {
+                        info.push("mode=event_time".to_string());
+                        info.push(format!("lateToleranceMs={}", late_tolerance.as_millis()));
+                    }
+                }
+            }
+        },
+        PhysicalPlan::EventtimeWatermark(watermark) => match &watermark.config {
+            WatermarkConfig::Tumbling {
+                time_unit,
+                length,
+                strategy,
+            } => {
+                info.push("window=tumbling".to_string());
+                info.push(format!("unit={:?}", time_unit));
+                info.push(format!("length={}", length));
+                match strategy {
+                    WatermarkStrategy::ProcessingTime { interval, .. } => {
+                        info.push("mode=processing_time".to_string());
+                        info.push(format!("interval={}", interval));
+                    }
+                    WatermarkStrategy::EventTime { late_tolerance } => {
+                        info.push("mode=event_time".to_string());
+                        info.push(format!("lateToleranceMs={}", late_tolerance.as_millis()));
+                    }
+                }
+            }
+            WatermarkConfig::Sliding {
+                time_unit,
+                lookback,
+                lookahead,
+                strategy,
+            } => {
+                info.push("window=sliding".to_string());
+                info.push(format!("unit={:?}", time_unit));
+                info.push(format!("lookback={}", lookback));
+                match lookahead {
+                    Some(lookahead) => info.push(format!("lookahead={}", lookahead)),
+                    None => info.push("lookahead=none".to_string()),
+                }
+                match strategy {
+                    WatermarkStrategy::ProcessingTime { interval, .. } => {
+                        info.push("mode=processing_time".to_string());
+                        info.push(format!("interval={}", interval));
+                    }
+                    WatermarkStrategy::EventTime { late_tolerance } => {
+                        info.push("mode=event_time".to_string());
+                        info.push(format!("lateToleranceMs={}", late_tolerance.as_millis()));
+                    }
+                }
+            }
+        },
+        PhysicalPlan::Watermark(watermark) => match &watermark.config {
+            WatermarkConfig::Tumbling {
+                time_unit,
+                length,
+                strategy,
+            } => {
+                info.push("window=tumbling".to_string());
+                info.push(format!("unit={:?}", time_unit));
+                info.push(format!("length={}", length));
+                match strategy {
+                    WatermarkStrategy::ProcessingTime { interval, .. } => {
+                        info.push("mode=processing_time".to_string());
+                        info.push(format!("interval={}", interval));
+                    }
+                    WatermarkStrategy::EventTime { late_tolerance } => {
+                        info.push("mode=event_time".to_string());
+                        info.push(format!("lateToleranceMs={}", late_tolerance.as_millis()));
+                    }
+                }
+            }
+            WatermarkConfig::Sliding {
+                time_unit,
+                lookback,
+                lookahead,
+                strategy,
+            } => {
+                info.push("window=sliding".to_string());
+                info.push(format!("unit={:?}", time_unit));
+                info.push(format!("lookback={}", lookback));
+                match lookahead {
+                    Some(lookahead) => info.push(format!("lookahead={}", lookahead)),
+                    None => info.push("lookahead=none".to_string()),
+                }
+                match strategy {
+                    WatermarkStrategy::ProcessingTime { interval, .. } => {
+                        info.push("mode=processing_time".to_string());
+                        info.push(format!("interval={}", interval));
+                    }
+                    WatermarkStrategy::EventTime { late_tolerance } => {
+                        info.push("mode=event_time".to_string());
+                        info.push(format!("lateToleranceMs={}", late_tolerance.as_millis()));
                     }
                 }
             }
