@@ -135,7 +135,7 @@ impl Processor for TumblingWatermarkProcessor {
         let output = self.output.clone();
         let control_output = self.control_output.clone();
         let mut ticker = Self::build_interval(self.physical.config.strategy());
-        println!("[WatermarkProcessor:{id}] starting");
+        tracing::info!(processor_id = %id, "watermark processor starting");
 
         tokio::spawn(async move {
             loop {
@@ -146,8 +146,8 @@ impl Processor for TumblingWatermarkProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                println!("[WatermarkProcessor:{id}] received StreamEnd (control)");
-                                println!("[WatermarkProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "received StreamEnd (control)");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                             continue;
@@ -173,8 +173,8 @@ impl Processor for TumblingWatermarkProcessor {
                                 let is_terminal = signal.is_terminal();
                                 send_with_backpressure(&output, StreamData::control(signal)).await?;
                                 if is_terminal {
-                                    println!("[WatermarkProcessor:{id}] received StreamEnd (data)");
-                                    println!("[WatermarkProcessor:{id}] stopped");
+                                    tracing::info!(processor_id = %id, "received StreamEnd (data)");
+                                    tracing::info!(processor_id = %id, "stopped");
                                     return Ok(());
                                 }
                             }
@@ -182,8 +182,8 @@ impl Processor for TumblingWatermarkProcessor {
                                 let is_terminal = data.is_terminal();
                                 send_with_backpressure(&output, data).await?;
                                 if is_terminal {
-                                    println!("[WatermarkProcessor:{id}] received StreamEnd (data)");
-                                    println!("[WatermarkProcessor:{id}] stopped");
+                                    tracing::info!(processor_id = %id, "received StreamEnd (data)");
+                                    tracing::info!(processor_id = %id, "stopped");
                                     return Ok(());
                                 }
                             }
@@ -192,11 +192,11 @@ impl Processor for TumblingWatermarkProcessor {
                                     "WatermarkProcessor input lagged by {} messages",
                                     skipped
                                 );
-                                println!("[WatermarkProcessor:{id}] input lagged by {skipped} messages");
+                                tracing::warn!(processor_id = %id, skipped = skipped, "input lagged");
                                 forward_error(&output, &id, message).await?;
                             }
                             None => {
-                                println!("[WatermarkProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                         }
@@ -322,7 +322,7 @@ impl Processor for SlidingWatermarkProcessor {
             let mut pending_deadlines: BinaryHeap<Reverse<u128>> = BinaryHeap::new();
             let mut next_sleep: Option<Pin<Box<Sleep>>> = None;
             let mut last_emitted_nanos: Option<u128> = None;
-            println!("[WatermarkProcessor:{id}] starting");
+            tracing::info!(processor_id = %id, "watermark processor starting");
 
             async fn emit_deadline_watermark(
                 output: &broadcast::Sender<StreamData>,
@@ -346,8 +346,8 @@ impl Processor for SlidingWatermarkProcessor {
                             let is_terminal = control_signal.is_terminal();
                             send_control_with_backpressure(&control_output, control_signal).await?;
                             if is_terminal {
-                                println!("[WatermarkProcessor:{id}] received StreamEnd (control)");
-                                println!("[WatermarkProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "received StreamEnd (control)");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                             continue;
@@ -397,8 +397,8 @@ impl Processor for SlidingWatermarkProcessor {
                                         let is_terminal = other.is_terminal();
                                         send_with_backpressure(&output, other).await?;
                                         if is_terminal {
-                                            println!("[WatermarkProcessor:{id}] received StreamEnd (data)");
-                                            println!("[WatermarkProcessor:{id}] stopped");
+                                            tracing::info!(processor_id = %id, "received StreamEnd (data)");
+                                            tracing::info!(processor_id = %id, "stopped");
                                             return Ok(());
                                         }
                                     }
@@ -409,11 +409,11 @@ impl Processor for SlidingWatermarkProcessor {
                                     "WatermarkProcessor input lagged by {} messages",
                                     skipped
                                 );
-                                println!("[WatermarkProcessor:{id}] input lagged by {skipped} messages");
+                                tracing::warn!(processor_id = %id, skipped = skipped, "input lagged");
                                 forward_error(&output, &id, message).await?;
                             }
                             None => {
-                                println!("[WatermarkProcessor:{id}] stopped");
+                                tracing::info!(processor_id = %id, "stopped");
                                 return Ok(());
                             }
                         }
