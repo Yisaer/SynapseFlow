@@ -4,5 +4,6 @@
 // - flow: Expression evaluation and SQL conversion
 // - datatypes: Data type definitions
 
+pub mod config;
 pub mod server;
 pub use manager::{register_schema, schema_registry, SchemaParser};

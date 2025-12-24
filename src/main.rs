@@ -2,43 +2,46 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use synapse_flow::server::{self, ServerOptions};
+use synapse_flow::server::{self};
 
 #[derive(Debug, Clone)]
 struct CliFlags {
-    profiling_enabled: Option<bool>,
     data_dir: Option<String>,
+    config_path: Option<String>,
 }
 
 impl CliFlags {
     fn parse() -> Self {
-        let mut profiling_enabled = None;
         let mut data_dir = None;
+        let mut config_path = None;
         let mut args = std::env::args().skip(1).peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--enable-profiling" | "--profiling" => profiling_enabled = Some(true),
-                "--disable-profiling" | "--no-profiling" => profiling_enabled = Some(false),
                 "--data-dir" => {
                     if let Some(val) = args.next() {
                         data_dir = Some(val);
+                    }
+                }
+                "--config" => {
+                    if let Some(val) = args.next() {
+                        config_path = Some(val);
                     }
                 }
                 _ => {}
             }
         }
         Self {
-            profiling_enabled,
             data_dir,
+            config_path,
         }
-    }
-
-    fn profiling_override(&self) -> Option<bool> {
-        self.profiling_enabled
     }
 
     fn data_dir(&self) -> Option<&str> {
         self.data_dir.as_deref()
+    }
+
+    fn config_path(&self) -> Option<&str> {
+        self.config_path.as_deref()
     }
 }
 
@@ -51,11 +54,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     let cli_flags = CliFlags::parse();
-    let options = ServerOptions {
-        profiling_enabled: cli_flags.profiling_override(),
-        data_dir: cli_flags.data_dir().map(|s| s.to_string()),
-        manager_addr: None,
+    let config = if let Some(path) = cli_flags.config_path() {
+        let cfg = synapse_flow::config::AppConfig::load_required(path)?;
+        println!("[synapse-flow] loaded config: {}", path);
+        cfg
+    } else {
+        synapse_flow::config::AppConfig::default()
     };
+
+    let mut options = config.to_server_options();
+    if let Some(dir) = cli_flags.data_dir() {
+        options.data_dir = Some(dir.to_string());
+    }
 
     // Prepare the FlowInstance so callers can register custom codecs/connectors.
     let instance = server::prepare_registry();
