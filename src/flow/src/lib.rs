@@ -301,12 +301,65 @@ pub fn create_pipeline(
     Ok(pipeline)
 }
 
+fn validate_eventtime_enabled(
+    stream_defs: &HashMap<String, Arc<StreamDefinition>>,
+    registries: &PipelineRegistries,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = registries.eventtime_type_registry();
+    let mut saw_eventtime = false;
+    for (stream, def) in stream_defs {
+        let Some(eventtime) = def.eventtime() else {
+            continue;
+        };
+        saw_eventtime = true;
+        let column = eventtime.column();
+        if !def.schema().contains_column(column) {
+            return Err(format!(
+                "eventtime.column `{}` not found in stream `{}` schema",
+                column, stream
+            )
+            .into());
+        }
+        let type_key = eventtime.eventtime_type();
+        if !registry.is_registered(type_key) {
+            let available = registry.list().join(", ");
+            return Err(format!(
+                "eventtime.type `{}` not registered (available: {})",
+                type_key, available
+            )
+            .into());
+        }
+    }
+    if !saw_eventtime {
+        return Err("eventtime.enabled=true but no stream declares eventtime".into());
+    }
+    Ok(())
+}
+
 pub fn explain_pipeline(
     sql: &str,
     sinks: Vec<PipelineSink>,
     catalog: &Catalog,
     shared_stream_registry: &SharedStreamRegistry,
     registries: &PipelineRegistries,
+) -> Result<PipelineExplain, Box<dyn std::error::Error>> {
+    explain_pipeline_with_options(
+        sql,
+        sinks,
+        catalog,
+        shared_stream_registry,
+        registries,
+        &crate::pipeline::PipelineOptions::default(),
+    )
+}
+
+pub fn explain_pipeline_with_options(
+    sql: &str,
+    sinks: Vec<PipelineSink>,
+    catalog: &Catalog,
+    shared_stream_registry: &SharedStreamRegistry,
+    registries: &PipelineRegistries,
+    options: &crate::pipeline::PipelineOptions,
 ) -> Result<PipelineExplain, Box<dyn std::error::Error>> {
     let select_stmt = parser::parse_sql_with_registries(
         sql,
@@ -318,6 +371,10 @@ pub fn explain_pipeline(
     let logical_plan = create_logical_plan(select_stmt, sinks, &stream_defs)?;
     let (logical_plan, pruned_binding) =
         optimize_logical_plan(Arc::clone(&logical_plan), &schema_binding);
+    if options.eventtime.enabled {
+        validate_eventtime_enabled(&stream_defs, registries)?;
+    }
+
     let physical_plan =
         create_physical_plan(Arc::clone(&logical_plan), &pruned_binding, registries)?;
     let optimized_plan = optimize_physical_plan(
@@ -325,7 +382,15 @@ pub fn explain_pipeline(
         registries.encoder_registry().as_ref(),
         registries.aggregate_registry(),
     );
-    Ok(PipelineExplain::new(logical_plan, optimized_plan))
+
+    Ok(PipelineExplain::new_with_pipeline_options(
+        crate::planner::explain::PipelineExplainOptions {
+            eventtime_enabled: options.eventtime.enabled,
+            eventtime_late_tolerance_ms: options.eventtime.late_tolerance.as_millis(),
+        },
+        logical_plan,
+        optimized_plan,
+    ))
 }
 
 /// Convenience helper for tests and demos that just need a logging mock sink.

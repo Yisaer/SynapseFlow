@@ -12,13 +12,46 @@ use crate::processor::processor_builder::{PlanProcessor, ProcessorPipeline};
 use crate::processor::Processor;
 use crate::shared_stream::SharedStreamRegistry;
 use crate::{
-    create_physical_plan, create_pipeline, explain_pipeline, optimize_logical_plan,
+    create_physical_plan, explain_pipeline_with_options, optimize_logical_plan,
     optimize_physical_plan, PipelineExplain, PipelineRegistries, PipelineSink,
     PipelineSinkConnector, SinkConnectorConfig,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+fn validate_eventtime_enabled(
+    stream_definitions: &HashMap<String, Arc<StreamDefinition>>,
+    registries: &PipelineRegistries,
+) -> Result<(), String> {
+    let registry = registries.eventtime_type_registry();
+    let mut saw_eventtime = false;
+    for (stream, definition) in stream_definitions {
+        let Some(eventtime) = definition.eventtime() else {
+            continue;
+        };
+        saw_eventtime = true;
+        let column = eventtime.column();
+        if !definition.schema().contains_column(column) {
+            return Err(format!(
+                "eventtime.column `{}` not found in stream `{}` schema",
+                column, stream
+            ));
+        }
+        let type_key = eventtime.eventtime_type();
+        if !registry.is_registered(type_key) {
+            let available = registry.list().join(", ");
+            return Err(format!(
+                "eventtime.type `{}` not registered (available: {})",
+                type_key, available
+            ));
+        }
+    }
+    if !saw_eventtime {
+        return Err("eventtime.enabled=true but no stream declares eventtime".to_string());
+    }
+    Ok(())
+}
 
 const DEFAULT_SINK_TOPIC: &str = "/yisa/data2";
 
@@ -402,12 +435,13 @@ impl PipelineManager {
         let sinks =
             build_sinks_from_definition(&definition).map_err(PipelineError::BuildFailure)?;
 
-        explain_pipeline(
+        explain_pipeline_with_options(
             definition.sql(),
             sinks,
             &self.catalog,
             self.shared_stream_registry,
             &self.registries,
+            definition.options(),
         )
         .map_err(|err| PipelineError::BuildFailure(err.to_string()))
     }
@@ -463,37 +497,13 @@ fn build_pipeline_runtime(
     mqtt_client_manager: &MqttClientManager,
     registries: &PipelineRegistries,
 ) -> Result<(ProcessorPipeline, Vec<String>), String> {
-    let select_stmt = parser::parse_sql_with_registries(
-        definition.sql(),
-        registries.aggregate_registry(),
-        registries.stateful_registry(),
-    )
-    .map_err(|err| err.to_string())?;
-    let streams: Vec<String> = select_stmt
-        .source_infos
-        .iter()
-        .map(|info| info.name.clone())
-        .collect();
-    let mut stream_definitions = HashMap::new();
-    for stream in &streams {
-        let definition = catalog
-            .get(stream)
-            .ok_or_else(|| format!("stream {stream} not found in catalog"))?;
-        stream_definitions.insert(stream.clone(), definition);
-    }
-
-    let sinks = build_sinks_from_definition(definition)?;
-    let mut pipeline = create_pipeline(
-        definition.sql(),
-        sinks,
+    let (pipeline, streams, _) = build_pipeline_runtime_with_logical_ir(
+        definition,
         catalog,
         shared_stream_registry,
-        mqtt_client_manager.clone(),
+        mqtt_client_manager,
         registries,
-    )
-    .map_err(|err| err.to_string())?;
-    pipeline.set_pipeline_id(definition.id().to_string());
-    attach_sources_from_catalog(&mut pipeline, &stream_definitions, mqtt_client_manager)?;
+    )?;
     Ok((pipeline, streams))
 }
 
@@ -554,7 +564,17 @@ fn build_pipeline_runtime_with_logical_ir(
         registries.encoder_registry().as_ref(),
         registries.aggregate_registry(),
     );
-    let explain = PipelineExplain::new(Arc::clone(&logical_plan), Arc::clone(&optimized_plan));
+    if definition.options().eventtime.enabled {
+        validate_eventtime_enabled(&stream_definitions, registries)?;
+    }
+    let explain = PipelineExplain::new_with_pipeline_options(
+        crate::planner::explain::PipelineExplainOptions {
+            eventtime_enabled: definition.options().eventtime.enabled,
+            eventtime_late_tolerance_ms: definition.options().eventtime.late_tolerance.as_millis(),
+        },
+        Arc::clone(&logical_plan),
+        Arc::clone(&optimized_plan),
+    );
     tracing::info!(explain = %explain.to_pretty_string(), "pipeline explain");
 
     let mut pipeline = create_processor_pipeline(
@@ -624,6 +644,9 @@ fn build_pipeline_runtime_from_logical_ir(
         registries.encoder_registry().as_ref(),
         registries.aggregate_registry(),
     );
+    if definition.options().eventtime.enabled {
+        validate_eventtime_enabled(&stream_definitions, registries)?;
+    }
     let explain = PipelineExplain::new(Arc::clone(&logical_plan), Arc::clone(&optimized_plan));
     tracing::info!(explain = %explain.to_pretty_string(), "pipeline explain");
 

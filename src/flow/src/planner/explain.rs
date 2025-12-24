@@ -11,6 +11,12 @@ pub struct ExplainRow {
     pub info: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PipelineExplainOptions {
+    pub eventtime_enabled: bool,
+    pub eventtime_late_tolerance_ms: u128,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExplainReport {
     pub root: ExplainNode,
@@ -68,6 +74,7 @@ impl ExplainReport {
 
 #[derive(Debug, Clone)]
 pub struct PipelineExplain {
+    pub options: Option<PipelineExplainOptions>,
     pub logical: ExplainReport,
     pub physical: ExplainReport,
 }
@@ -80,12 +87,53 @@ impl PipelineExplain {
         let physical = ExplainReport {
             root: build_physical_node(&physical_plan),
         };
-        Self { logical, physical }
+        Self {
+            options: None,
+            logical,
+            physical,
+        }
+    }
+
+    pub fn new_with_pipeline_options(
+        options: PipelineExplainOptions,
+        logical_plan: Arc<LogicalPlan>,
+        physical_plan: Arc<PhysicalPlan>,
+    ) -> Self {
+        let logical = ExplainReport {
+            root: build_logical_node(&logical_plan),
+        };
+        let physical = ExplainReport {
+            root: build_physical_node(&physical_plan),
+        };
+        Self {
+            options: Some(options),
+            logical,
+            physical,
+        }
     }
 
     pub fn to_pretty_string(&self) -> String {
+        let options = self.options.as_ref().map(|opts| {
+            let mut lines = vec![
+                format!("eventtime.enabled={}", opts.eventtime_enabled),
+                format!(
+                    "eventtime.lateToleranceMs={}",
+                    opts.eventtime_late_tolerance_ms
+                ),
+            ];
+            if opts.eventtime_enabled {
+                lines.push("time_mode=event_time".to_string());
+                lines.push("late_policy=drop (ts <= watermark)".to_string());
+                lines.push("parse_failure=StreamData::Error (non-fatal)".to_string());
+            } else {
+                lines.push("time_mode=processing_time".to_string());
+            }
+            format!("Pipeline Options:\n- {}\n\n", lines.join("\n- "))
+        });
+        let options = options.unwrap_or_default();
         format!(
-            "Logical Plan Explain:\n{}\n\nPhysical Plan Explain:\n{}",
+            "{}Logical Plan Explain:\n{}\n\nPhysical Plan Explain:\n{}",
+            options,
             self.logical.table_string(),
             self.physical.table_string()
         )
@@ -94,6 +142,7 @@ impl PipelineExplain {
     /// Structured JSON view containing both logical and physical explains.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
+            "options": self.options,
             "logical": self.logical.to_json(),
             "physical": self.physical.to_json(),
         })
