@@ -518,4 +518,36 @@ mod tests {
         assert_eq!(struct_val.get_field("c"), Some(&Value::Int64(10)));
         assert_eq!(struct_val.get_field("d"), None);
     }
+
+    #[test]
+    fn json_decoder_respects_list_struct_schema_fields() {
+        let element_type = ConcreteDatatype::Struct(StructType::new(Arc::new(vec![
+            StructField::new(
+                "c".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+                false,
+            ),
+        ])));
+
+        let schema = Arc::new(Schema::new(vec![ColumnSchema::new(
+            "orders".to_string(),
+            "items".to_string(),
+            ConcreteDatatype::List(datatypes::ListType::new(Arc::new(element_type))),
+        )]));
+
+        let decoder = JsonDecoder::new("orders", schema, JsonMap::new());
+        let payload = br#"{"items":[{"c":10,"d":"ignore"},{"c":20,"d":"ignore2"}]}"#.as_ref();
+        let tuple = decoder.decode_tuple(payload).expect("decode tuple");
+
+        let Some(Value::List(list_val)) = tuple.value_by_name("orders", "items") else {
+            panic!("expected list value");
+        };
+        assert_eq!(list_val.len(), 2);
+
+        let Some(Value::Struct(first)) = list_val.get(0) else {
+            panic!("expected struct element");
+        };
+        assert_eq!(first.get_field("c"), Some(&Value::Int64(10)));
+        assert_eq!(first.get_field("d"), None);
+    }
 }
