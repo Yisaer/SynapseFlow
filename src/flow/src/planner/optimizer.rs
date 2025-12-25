@@ -605,7 +605,7 @@ mod tests {
         let pre_table = pre_explain.physical.to_json().to_string();
         assert_eq!(
             pre_table,
-            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalSlidingWindow_2","info":["kind=sliding","unit=Seconds","lookback=10","lookahead=none"],"operator":"PhysicalSlidingWindow"}],"id":"PhysicalAggregation_3","info":["calls=[sum(a) -> col_1]","group_by=[b]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_4","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_6","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_5","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_7","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
+            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalProcessTimeWatermark_2","info":["window=sliding","unit=Seconds","lookback=10","lookahead=none","mode=processing_time","interval=1"],"operator":"PhysicalProcessTimeWatermark"}],"id":"PhysicalSlidingWindow_3","info":["kind=sliding","unit=Seconds","lookback=10","lookahead=none"],"operator":"PhysicalSlidingWindow"}],"id":"PhysicalAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
         );
 
         let optimized_plan = optimize_physical_plan(
@@ -618,7 +618,7 @@ mod tests {
         let post_table = post_explain.physical.to_json().to_string();
         assert_eq!(
             post_table,
-            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalStreamingAggregation_3","info":["calls=[sum(a) -> col_1]","group_by=[b]","window=sliding","unit=Seconds","lookback=10","lookahead=none"],"operator":"PhysicalStreamingAggregation"}],"id":"PhysicalProject_4","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_6","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_5","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_7","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
+            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalProcessTimeWatermark_2","info":["window=sliding","unit=Seconds","lookback=10","lookahead=none","mode=processing_time","interval=1"],"operator":"PhysicalProcessTimeWatermark"}],"id":"PhysicalStreamingAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]","window=sliding","unit=Seconds","lookback=10","lookahead=none"],"operator":"PhysicalStreamingAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
         );
     }
 
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_plan_sliding_without_lookahead_has_no_watermark() {
+    fn physical_plan_sliding_without_lookahead_includes_watermark_for_gc() {
         let encoder_registry = EncoderRegistry::with_builtin_encoders();
         let aggregate_registry = AggregateFunctionRegistry::with_builtins();
         let registries = PipelineRegistries::new(
@@ -770,7 +770,7 @@ mod tests {
         let table = explain.physical.to_json().to_string();
         assert_eq!(
             table,
-            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalSlidingWindow_2","info":["kind=sliding","unit=Seconds","lookback=10","lookahead=none"],"operator":"PhysicalSlidingWindow"}],"id":"PhysicalAggregation_3","info":["calls=[sum(a) -> col_1]","group_by=[b]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_4","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_6","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_5","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_7","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
+            r##"{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a, b]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b]"],"operator":"PhysicalDecoder"}],"id":"PhysicalProcessTimeWatermark_2","info":["window=sliding","unit=Seconds","lookback=10","lookahead=none","mode=processing_time","interval=1"],"operator":"PhysicalProcessTimeWatermark"}],"id":"PhysicalSlidingWindow_3","info":["kind=sliding","unit=Seconds","lookback=10","lookahead=none"],"operator":"PhysicalSlidingWindow"}],"id":"PhysicalAggregation_4","info":["calls=[sum(a) -> col_1]","group_by=[b]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_5","info":["fields=[col_1]"],"operator":"PhysicalProject"}],"id":"PhysicalEncoder_7","info":["sink_id=test_sink","encoder=json"],"operator":"PhysicalEncoder"}],"id":"PhysicalDataSink_6","info":["sink_id=test_sink","connector=nop"],"operator":"PhysicalDataSink"}],"id":"PhysicalResultCollect_8","info":["sink_count=1"],"operator":"PhysicalResultCollect"}"##
         );
     }
 }

@@ -285,10 +285,11 @@ impl Processor for TumblingWatermarkProcessor {
 
 /// Sliding window watermark processor (processing-time only).
 ///
-/// When `WatermarkConfig::Sliding { lookahead: Some(L), .. }`, this processor schedules and emits
-/// a deadline watermark per trigger tuple at `deadline = tuple.timestamp + L`.
+/// This processor emits periodic processing-time watermarks (ticker-driven) to advance time and
+/// enable downstream GC in watermark-driven window processors.
 ///
-/// Event-time watermark semantics are not implemented yet.
+/// When `WatermarkConfig::Sliding { lookahead: Some(L), .. }`, it also schedules and emits a
+/// deadline watermark per trigger tuple at `deadline = tuple.timestamp + L`.
 ///
 /// Implementation note (why there is a heap + a single `Sleep`):
 /// - Each incoming tuple yields a deadline time `t + lookahead`; we push all deadlines into a
@@ -301,7 +302,8 @@ impl Processor for TumblingWatermarkProcessor {
 ///   at precise times.
 pub struct SlidingWatermarkProcessor {
     id: String,
-    lookahead: Duration,
+    lookahead: Option<Duration>,
+    ticker: Option<Interval>,
     inputs: Vec<broadcast::Receiver<StreamData>>,
     control_inputs: Vec<broadcast::Receiver<ControlSignal>>,
     output: broadcast::Sender<StreamData>,
@@ -312,22 +314,20 @@ impl SlidingWatermarkProcessor {
     pub fn new(id: impl Into<String>, physical: Arc<PhysicalProcessTimeWatermark>) -> Self {
         let (output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
         let (control_output, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);
-        let lookahead_secs = match &physical.config {
-            WatermarkConfig::Sliding {
-                lookahead: Some(lookahead),
-                ..
-            } => *lookahead,
-            WatermarkConfig::Sliding {
-                lookahead: None, ..
-            } => {
-                panic!("SlidingWatermarkProcessor requires sliding watermark lookahead")
-            }
+        let (lookahead, strategy) = match &physical.config {
+            WatermarkConfig::Sliding { lookahead, strategy, .. } => (*lookahead, strategy),
             _ => panic!("SlidingWatermarkProcessor requires WatermarkConfig::Sliding"),
         };
-        let lookahead = Duration::from_secs(lookahead_secs);
+        let lookahead = lookahead.map(Duration::from_secs);
+        let ticker = strategy.interval_duration().map(|duration| {
+            let mut ticker = interval(duration);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ticker
+        });
         Self {
             id: id.into(),
             lookahead,
+            ticker,
             inputs: Vec::new(),
             control_inputs: Vec::new(),
             output,
@@ -377,6 +377,7 @@ impl Processor for SlidingWatermarkProcessor {
         let mut control_active = !control_streams.is_empty();
         let output = self.output.clone();
         let control_output = self.control_output.clone();
+        let mut ticker = self.ticker.take();
 
         tokio::spawn(async move {
             let mut pending_deadlines: BinaryHeap<Reverse<u128>> = BinaryHeap::new();
@@ -384,7 +385,7 @@ impl Processor for SlidingWatermarkProcessor {
             let mut last_emitted_nanos: Option<u128> = None;
             tracing::info!(processor_id = %id, "watermark processor starting");
 
-            async fn emit_deadline_watermark(
+            async fn emit_monotonic_watermark(
                 output: &broadcast::Sender<StreamData>,
                 last_emitted_nanos: &mut Option<u128>,
                 ts: SystemTime,
@@ -415,6 +416,16 @@ impl Processor for SlidingWatermarkProcessor {
                             control_active = false;
                         }
                     }
+                    _tick = async {
+                        if let Some(ticker) = ticker.as_mut() {
+                            ticker.tick().await;
+                            Some(())
+                        } else {
+                            None
+                        }
+                    }, if ticker.is_some() => {
+                        emit_monotonic_watermark(&output, &mut last_emitted_nanos, SystemTime::now()).await?;
+                    }
                     _deadline = async {
                         if let Some(sleep) = next_sleep.as_mut() {
                             sleep.as_mut().await;
@@ -425,7 +436,7 @@ impl Processor for SlidingWatermarkProcessor {
                     }, if next_sleep.is_some() => {
                         if let Some(Reverse(deadline_nanos)) = pending_deadlines.pop() {
                             let deadline_ts = SlidingWatermarkProcessor::from_nanos(deadline_nanos)?;
-                            emit_deadline_watermark(&output, &mut last_emitted_nanos, deadline_ts)
+                            emit_monotonic_watermark(&output, &mut last_emitted_nanos, deadline_ts)
                                 .await?;
                         }
                         next_sleep = if let Some(Reverse(nanos)) = pending_deadlines.peek() {
@@ -439,17 +450,19 @@ impl Processor for SlidingWatermarkProcessor {
                             Some(Ok(data)) => {
                                 match data {
                                     StreamData::Collection(collection) => {
-                                        for row in collection.rows() {
-                                            let deadline = row.timestamp + lookahead;
-                                            let deadline_nanos =
-                                                SlidingWatermarkProcessor::to_nanos(deadline)?;
-                                            pending_deadlines.push(Reverse(deadline_nanos));
+                                        if let Some(lookahead) = lookahead {
+                                            for row in collection.rows() {
+                                                let deadline = row.timestamp + lookahead;
+                                                let deadline_nanos =
+                                                    SlidingWatermarkProcessor::to_nanos(deadline)?;
+                                                pending_deadlines.push(Reverse(deadline_nanos));
+                                            }
+                                            next_sleep = if let Some(Reverse(nanos)) = pending_deadlines.peek() {
+                                                Some(SlidingWatermarkProcessor::build_sleep(*nanos)?)
+                                            } else {
+                                                None
+                                            };
                                         }
-                                        next_sleep = if let Some(Reverse(nanos)) = pending_deadlines.peek() {
-                                            Some(SlidingWatermarkProcessor::build_sleep(*nanos)?)
-                                        } else {
-                                            None
-                                        };
                                         send_with_backpressure(&output, StreamData::collection(collection))
                                             .await?;
                                     }
@@ -871,10 +884,12 @@ mod tests {
             WatermarkConfig::Sliding {
                 time_unit: TimeUnit::Seconds,
                 lookback: 10,
-                lookahead: Some(15),
+                lookahead: Some(1),
                 strategy: WatermarkStrategy::ProcessingTime {
                     time_unit: TimeUnit::Seconds,
-                    interval: 1,
+                    // Use a long tick interval so the deadline emission is observable and not
+                    // dominated by periodic tick watermarks.
+                    interval: 10,
                 },
             },
             Vec::new(),
@@ -886,13 +901,18 @@ mod tests {
         let mut output_rx = processor.subscribe_output().unwrap();
         let _handle = processor.start();
 
-        // Use an old timestamp so deadline is already in the past and should be emitted immediately.
-        let batch = crate::model::RecordBatch::new(vec![tuple_at(1)]).expect("batch");
+        // Use "now-ish" timestamps to match processing-time assumptions.
+        let base = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("now")
+            .as_secs();
+        let batch = crate::model::RecordBatch::new(vec![tuple_at(base)]).expect("batch");
         assert!(input.send(StreamData::collection(Box::new(batch))).is_ok());
 
         let mut saw_collection = false;
-        let mut saw_deadline = false;
-        for _ in 0..4 {
+        let mut saw_deadline_or_later = false;
+        let expected_deadline = UNIX_EPOCH + Duration::from_secs(base + 1);
+        for _ in 0..8 {
             let msg = timeout(Duration::from_secs(2), output_rx.recv())
                 .await
                 .expect("timeout")
@@ -900,19 +920,52 @@ mod tests {
             match msg {
                 StreamData::Collection(_) => saw_collection = true,
                 StreamData::Watermark(ts) => {
-                    if ts == UNIX_EPOCH + Duration::from_secs(16) {
-                        saw_deadline = true;
+                    if ts >= expected_deadline {
+                        saw_deadline_or_later = true;
                     }
                 }
                 _ => {}
             }
-            if saw_collection && saw_deadline {
+            if saw_collection && saw_deadline_or_later {
                 break;
             }
         }
 
         assert!(saw_collection);
-        assert!(saw_deadline);
+        assert!(saw_deadline_or_later);
+    }
+
+    #[tokio::test]
+    async fn sliding_watermark_without_lookahead_still_emits_tick_watermarks() {
+        let physical = PhysicalProcessTimeWatermark::new(
+            WatermarkConfig::Sliding {
+                time_unit: TimeUnit::Seconds,
+                lookback: 10,
+                lookahead: None,
+                strategy: WatermarkStrategy::ProcessingTime {
+                    time_unit: TimeUnit::Seconds,
+                    interval: 1,
+                },
+            },
+            Vec::new(),
+            0,
+        );
+        let mut processor = SlidingWatermarkProcessor::new("wm", Arc::new(physical));
+        let (_input, _) = broadcast::channel::<StreamData>(DEFAULT_CHANNEL_CAPACITY);
+        processor.add_input(_input.subscribe());
+        let mut output_rx = processor.subscribe_output().unwrap();
+        let _handle = processor.start();
+
+        // The ticker may fire immediately; just assert we see a watermark promptly.
+        loop {
+            let msg = timeout(Duration::from_secs(2), output_rx.recv())
+                .await
+                .expect("timeout")
+                .expect("recv");
+            if matches!(msg, StreamData::Watermark(_)) {
+                break;
+            }
+        }
     }
 
     #[tokio::test]

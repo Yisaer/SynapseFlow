@@ -241,12 +241,26 @@ impl ProcessingWithoutLookaheadState {
         Ok(())
     }
 
-    async fn flush_up_to(&mut self, _watermark: SystemTime) -> Result<(), ProcessorError> {
+    async fn flush_up_to(&mut self, watermark: SystemTime) -> Result<(), ProcessorError> {
+        // Without lookahead, windows are emitted on data. Watermarks are still used to drive GC.
+        self.trim(watermark);
         Ok(())
     }
 
     async fn flush_all(&mut self) -> Result<(), ProcessorError> {
         Ok(())
+    }
+
+    fn trim(&mut self, watermark: SystemTime) {
+        let min_start = watermark
+            .checked_sub(self.lookback)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        while let Some(front) = self.rows.front() {
+            if front.timestamp >= min_start {
+                break;
+            }
+            self.rows.pop_front();
+        }
     }
 
     async fn emit_window(&self, start: SystemTime, end: SystemTime) -> Result<(), ProcessorError> {

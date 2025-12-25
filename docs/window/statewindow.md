@@ -1,17 +1,8 @@
 # StateWindow in StreamDialect
 
-This document describes the current `statewindow` design in synapseFlow, including the planned `OVER (PARTITION BY ...)` capability.
+This document describes `statewindow` semantics and syntax extensions.
 
-## Where It Appears
-
-In StreamDialect, window functions appear in the `GROUP BY` clause:
-
-- Window functions are only allowed in `GROUP BY`.
-- At most one window function is allowed per statement.
-- When present, the parser extracts the window into `SelectStmt.window`.
-- All other `GROUP BY` expressions remain in `SelectStmt.group_by_exprs`.
-
-See also: `docs/window.md`.
+See also: `docs/window/README.md` and `docs/window/syntax.md`.
 
 ## Syntax
 
@@ -91,4 +82,3 @@ GROUP BY statewindow(a > 0, b = 1) OVER (PARTITION BY region, device_type)
 - Multiple window functions in `GROUP BY` (e.g. `statewindow(...)` + `tumblingwindow(...)`) are rejected.
 - Unsupported `OVER` features for `statewindow` are rejected (e.g. `OVER (ORDER BY ...)`, frames).
 - `OVER ()` with no `PARTITION BY` expressions is rejected.
-

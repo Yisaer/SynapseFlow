@@ -418,41 +418,38 @@ fn create_physical_window_with_builder(
             lookback,
             lookahead,
         } => {
-            let (sliding_children, index) = if lookahead.is_some() {
-                let watermark_index = builder.allocate_index();
-                let strategy = if options.eventtime_enabled {
-                    WatermarkStrategy::EventTime {
-                        late_tolerance: options.eventtime_late_tolerance,
-                    }
-                } else {
-                    WatermarkStrategy::ProcessingTime {
-                        time_unit: *time_unit,
-                        interval: 1,
-                    }
-                };
-                let watermark_config = WatermarkConfig::Sliding {
-                    time_unit: *time_unit,
-                    lookback: *lookback,
-                    lookahead: *lookahead,
-                    strategy,
-                };
-                let watermark_plan = if options.eventtime_enabled {
-                    PhysicalPlan::EventtimeWatermark(PhysicalEventtimeWatermark::new(
-                        watermark_config,
-                        physical_children,
-                        watermark_index,
-                    ))
-                } else {
-                    PhysicalPlan::ProcessTimeWatermark(PhysicalProcessTimeWatermark::new(
-                        watermark_config,
-                        physical_children,
-                        watermark_index,
-                    ))
-                };
-                (vec![Arc::new(watermark_plan)], builder.allocate_index())
+            let watermark_index = builder.allocate_index();
+            let strategy = if options.eventtime_enabled {
+                WatermarkStrategy::EventTime {
+                    late_tolerance: options.eventtime_late_tolerance,
+                }
             } else {
-                (physical_children, builder.allocate_index())
+                WatermarkStrategy::ProcessingTime {
+                    time_unit: *time_unit,
+                    interval: 1,
+                }
             };
+            let watermark_config = WatermarkConfig::Sliding {
+                time_unit: *time_unit,
+                lookback: *lookback,
+                lookahead: *lookahead,
+                strategy,
+            };
+            let watermark_plan = if options.eventtime_enabled {
+                PhysicalPlan::EventtimeWatermark(PhysicalEventtimeWatermark::new(
+                    watermark_config,
+                    physical_children,
+                    watermark_index,
+                ))
+            } else {
+                PhysicalPlan::ProcessTimeWatermark(PhysicalProcessTimeWatermark::new(
+                    watermark_config,
+                    physical_children,
+                    watermark_index,
+                ))
+            };
+            let sliding_children = vec![Arc::new(watermark_plan)];
+            let index = builder.allocate_index();
 
             let sliding = crate::planner::physical::PhysicalSlidingWindow::new(
                 *time_unit,
