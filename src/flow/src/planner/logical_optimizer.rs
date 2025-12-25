@@ -497,21 +497,18 @@ fn extract_json_access_chain(expr: &SqlExpr) -> Option<(Vec<Ident>, Vec<String>)
     match expr {
         SqlExpr::JsonAccess {
             left,
-            operator,
+            operator: sqlparser::ast::JsonOperator::Arrow,
             right,
-        } => match operator {
-            sqlparser::ast::JsonOperator::Arrow => {
-                let (base, mut fields) = extract_json_access_chain(left.as_ref())
-                    .or_else(|| extract_json_access_base(left.as_ref()).map(|b| (b, Vec::new())))?;
-                let field_name = match right.as_ref() {
-                    SqlExpr::Identifier(ident) => ident.value.clone(),
-                    _ => return None,
-                };
-                fields.push(field_name);
-                Some((base, fields))
-            }
-            _ => None,
-        },
+        } => {
+            let (base, mut fields) = extract_json_access_chain(left.as_ref())
+                .or_else(|| extract_json_access_base(left.as_ref()).map(|b| (b, Vec::new())))?;
+            let field_name = match right.as_ref() {
+                SqlExpr::Identifier(ident) => ident.value.clone(),
+                _ => return None,
+            };
+            fields.push(field_name);
+            Some((base, fields))
+        }
         _ => None,
     }
 }
