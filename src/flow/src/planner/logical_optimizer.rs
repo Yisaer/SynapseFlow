@@ -472,7 +472,11 @@ impl<'a> TopLevelColumnUsageCollector<'a> {
                     .filter(|col| used.contains(col.name.as_str()))
                     .map(|col| col.name.clone())
                     .collect();
-                if cols.is_empty() { full.clone() } else { cols }
+                if cols.is_empty() {
+                    full.clone()
+                } else {
+                    cols
+                }
             };
 
             out.insert(entry.source_name.clone(), required);
