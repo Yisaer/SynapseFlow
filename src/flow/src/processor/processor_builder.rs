@@ -1210,6 +1210,7 @@ mod tests {
             StreamDecoderConfig::json(),
             Arc::clone(&schema),
             None,
+            None,
             vec![data_source],
             1,
         )));

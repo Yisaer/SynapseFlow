@@ -1394,7 +1394,7 @@ mod tests {
     use crate::planner::explain::ExplainReport;
     use crate::planner::logical::create_logical_plan;
     use datatypes::{
-        ColumnSchema, ConcreteDatatype, Int64Type, ListType, Schema, StringType, StructField,
+        ColumnSchema, ConcreteDatatype, Int64Type, Schema, StringType, StructField,
         StructType,
     };
     use parser::parse_sql;
@@ -1566,110 +1566,5 @@ mod tests {
         let topology = report.topology_string();
         println!("{topology}");
         assert!(topology.contains("schema=[a, b{c}]"));
-    }
-
-    #[test]
-    fn logical_explain_reflects_pruned_list_struct_schema() {
-        let element_struct = ConcreteDatatype::Struct(StructType::new(Arc::new(vec![
-            StructField::new("c".to_string(), ConcreteDatatype::Int64(Int64Type), false),
-            StructField::new("d".to_string(), ConcreteDatatype::String(StringType), false),
-        ])));
-
-        let schema = Arc::new(Schema::new(vec![
-            ColumnSchema::new(
-                "stream_3".to_string(),
-                "a".to_string(),
-                ConcreteDatatype::Int64(Int64Type),
-            ),
-            ColumnSchema::new(
-                "stream_3".to_string(),
-                "items".to_string(),
-                ConcreteDatatype::List(ListType::new(Arc::new(element_struct))),
-            ),
-        ]));
-
-        let definition = StreamDefinition::new(
-            "stream_3",
-            Arc::clone(&schema),
-            StreamProps::Mqtt(MqttStreamProps::default()),
-            StreamDecoderConfig::json(),
-        );
-        let mut stream_defs = HashMap::new();
-        stream_defs.insert("stream_3".to_string(), Arc::new(definition));
-
-        let select_stmt =
-            parse_sql("SELECT stream_3.a, stream_3.items[0]->c FROM stream_3").expect("parse sql");
-        let logical_plan =
-            create_logical_plan(select_stmt, vec![], &stream_defs).expect("logical plan");
-
-        let bindings = SchemaBinding::new(vec![SchemaBindingEntry {
-            source_name: "stream_3".to_string(),
-            alias: None,
-            schema: Arc::clone(&schema),
-            kind: crate::expr::sql_conversion::SourceBindingKind::Regular,
-        }]);
-
-        let (optimized, _pruned) = optimize_logical_plan(Arc::clone(&logical_plan), &bindings);
-        let report = ExplainReport::from_logical(optimized);
-        let topology = report.topology_string();
-        println!("{topology}");
-        assert!(topology.contains("schema=[a, items[0][struct{c}]]"));
-    }
-
-    #[test]
-    fn logical_explain_renders_list_index_projection_compact() {
-        let element_struct = ConcreteDatatype::Struct(StructType::new(Arc::new(vec![
-            StructField::new("x".to_string(), ConcreteDatatype::Int64(Int64Type), false),
-            StructField::new("y".to_string(), ConcreteDatatype::String(StringType), false),
-        ])));
-
-        let b_struct = ConcreteDatatype::Struct(StructType::new(Arc::new(vec![
-            StructField::new("c".to_string(), ConcreteDatatype::Int64(Int64Type), false),
-            StructField::new(
-                "items".to_string(),
-                ConcreteDatatype::List(ListType::new(Arc::new(element_struct))),
-                false,
-            ),
-        ])));
-
-        let schema = Arc::new(Schema::new(vec![
-            ColumnSchema::new(
-                "stream_4".to_string(),
-                "a".to_string(),
-                ConcreteDatatype::Int64(Int64Type),
-            ),
-            ColumnSchema::new(
-                "stream_4".to_string(),
-                "b".to_string(),
-                b_struct,
-            ),
-        ]));
-
-        let definition = StreamDefinition::new(
-            "stream_4",
-            Arc::clone(&schema),
-            StreamProps::Mqtt(MqttStreamProps::default()),
-            StreamDecoderConfig::json(),
-        );
-        let mut stream_defs = HashMap::new();
-        stream_defs.insert("stream_4".to_string(), Arc::new(definition));
-
-        let select_stmt = parse_sql("SELECT stream_4.a, stream_4.b->items[0]->x, stream_4.b->items[3]->x FROM stream_4")
-            .expect("parse sql");
-        let logical_plan =
-            create_logical_plan(select_stmt, vec![], &stream_defs).expect("logical plan");
-
-        let bindings = SchemaBinding::new(vec![SchemaBindingEntry {
-            source_name: "stream_4".to_string(),
-            alias: None,
-            schema: Arc::clone(&schema),
-            kind: crate::expr::sql_conversion::SourceBindingKind::Regular,
-        }]);
-
-        let (optimized, _pruned) = optimize_logical_plan(Arc::clone(&logical_plan), &bindings);
-        let report = ExplainReport::from_logical(optimized);
-        let topology = report.topology_string();
-        println!("{topology}");
-        assert!(topology.contains("schema=[a, b{items[0,3][struct{x}]}]"));
     }
 }

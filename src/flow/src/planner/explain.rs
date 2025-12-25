@@ -569,7 +569,10 @@ fn build_physical_node_with_prefix(
         }
         PhysicalPlan::Decoder(decoder) => {
             info.push(format!("decoder={}", decoder.decoder().kind()));
-            info.push(format_schema(decoder.schema().as_ref()));
+            info.push(format_schema_with_decode_projection(
+                decoder.schema().as_ref(),
+                decoder.decode_projection(),
+            ));
             if let Some(eventtime) = decoder.eventtime() {
                 info.push(format!("eventtime.column={}", eventtime.column_name));
                 info.push(format!("eventtime.type={}", eventtime.type_key));
