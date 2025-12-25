@@ -1203,6 +1203,7 @@ mod tests {
             "test_source".to_string(),
             None,
             Arc::clone(&schema),
+            None,
             0,
         )));
         let decoded_source = Arc::new(PhysicalPlan::Decoder(PhysicalDecoder::new(

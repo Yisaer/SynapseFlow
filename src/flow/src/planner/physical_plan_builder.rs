@@ -579,6 +579,7 @@ fn create_physical_data_source_with_builder(
                 logical_ds.source_name.clone(),
                 logical_ds.alias.clone(),
                 Arc::clone(&schema),
+                logical_ds.decode_projection.clone(),
                 index,
             );
             let datasource_plan = Arc::new(PhysicalPlan::DataSource(physical_ds));
@@ -600,6 +601,7 @@ fn create_physical_data_source_with_builder(
                     logical_ds.source_name.clone(),
                     logical_ds.alias.clone(),
                     Arc::clone(&schema),
+                    logical_ds.decode_projection.clone(),
                     0,
                 );
                 let ds_plan = Arc::new(PhysicalPlan::DataSource(ds));
