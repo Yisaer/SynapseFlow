@@ -35,6 +35,13 @@ impl ExplainReport {
         }
     }
 
+    /// Build a report from a physical plan only (no logical needed).
+    pub fn from_physical(plan: Arc<PhysicalPlan>) -> Self {
+        ExplainReport {
+            root: build_physical_node(&plan),
+        }
+    }
+
     pub fn topology_string(&self) -> String {
         self.root.topology_string()
     }

@@ -1,7 +1,7 @@
 //! Decoder abstractions for turning raw bytes into RecordBatch collections.
 
 use crate::model::{CollectionError, Message, RecordBatch, Tuple};
-use datatypes::{ConcreteDatatype, ListValue, Schema, StructField, StructType, StructValue, Value};
+use datatypes::{ConcreteDatatype, ListType, ListValue, Schema, StructField, StructType, StructValue, Value};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::sync::Arc;
 
@@ -240,7 +240,7 @@ impl JsonDecoder {
             for (idx, column) in self.schema.column_schemas().iter().enumerate() {
                 let value = row
                     .remove(&column.name)
-                    .map(|json| json_to_value(&json))
+                    .map(|json| json_to_value_with_datatype(&json, &column.data_type))
                     .unwrap_or(Value::Null);
                 keys.push(self.schema_keys[idx].clone());
                 values.push(Arc::new(value));
@@ -283,7 +283,7 @@ impl JsonDecoder {
 
                 let value = if should_decode {
                     row.remove(&column.name)
-                        .map(|json| json_to_value(&json))
+                        .map(|json| json_to_value_with_datatype(&json, &column.data_type))
                         .unwrap_or(Value::Null)
                 } else {
                     let _ = row.remove(&column.name);
@@ -370,10 +370,70 @@ fn json_to_value(value: &JsonValue) -> Value {
     }
 }
 
+fn json_to_value_with_datatype(value: &JsonValue, datatype: &ConcreteDatatype) -> Value {
+    match datatype {
+        ConcreteDatatype::Null => Value::Null,
+        ConcreteDatatype::Bool(_) => match value {
+            JsonValue::Bool(b) => Value::Bool(*b),
+            _ => Value::Null,
+        },
+        ConcreteDatatype::Int64(_) => match value {
+            JsonValue::Number(n) => n.as_i64().map(Value::Int64).unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+        ConcreteDatatype::Uint64(_) => match value {
+            JsonValue::Number(n) => n.as_u64().map(Value::Uint64).unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+        ConcreteDatatype::Int8(_)
+        | ConcreteDatatype::Int16(_)
+        | ConcreteDatatype::Int32(_)
+        | ConcreteDatatype::Uint8(_)
+        | ConcreteDatatype::Uint16(_)
+        | ConcreteDatatype::Uint32(_)
+        | ConcreteDatatype::Float32(_)
+        | ConcreteDatatype::Float64(_)
+        | ConcreteDatatype::String(_) => json_to_value(value),
+        ConcreteDatatype::List(list_type) => json_to_list_value_with_datatype(value, list_type),
+        ConcreteDatatype::Struct(struct_type) => json_to_struct_value_with_datatype(value, struct_type),
+    }
+}
+
+fn json_to_list_value_with_datatype(value: &JsonValue, list_type: &ListType) -> Value {
+    let JsonValue::Array(items) = value else {
+        return Value::Null;
+    };
+
+    let element_type = list_type.item_type();
+    let converted: Vec<Value> = items
+        .iter()
+        .map(|item| json_to_value_with_datatype(item, element_type))
+        .collect();
+    Value::List(ListValue::new(converted, Arc::new(element_type.clone())))
+}
+
+fn json_to_struct_value_with_datatype(value: &JsonValue, struct_type: &StructType) -> Value {
+    let JsonValue::Object(map) = value else {
+        return Value::Null;
+    };
+
+    let values: Vec<Value> = struct_type
+        .fields()
+        .iter()
+        .map(|field| {
+            map.get(field.name())
+                .map(|v| json_to_value_with_datatype(v, field.data_type()))
+                .unwrap_or(Value::Null)
+        })
+        .collect();
+
+    Value::Struct(StructValue::new(values, struct_type.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datatypes::{ColumnSchema, ConcreteDatatype, Int64Type, Schema, StringType, Value};
+    use datatypes::{ColumnSchema, ConcreteDatatype, Int64Type, Schema, StringType, StructField, StructType, Value};
     use serde_json::Map as JsonMap;
 
     #[test]
@@ -430,5 +490,32 @@ mod tests {
             .decode_tuple(payload)
             .expect_err("multiple rows fail");
         assert!(format!("{err}").contains("multiple rows"));
+    }
+
+    #[test]
+    fn json_decoder_respects_struct_schema_fields() {
+        let struct_type = ConcreteDatatype::Struct(StructType::new(Arc::new(vec![
+            StructField::new(
+                "c".to_string(),
+                ConcreteDatatype::Int64(Int64Type),
+                false,
+            ),
+        ])));
+
+        let schema = Arc::new(Schema::new(vec![ColumnSchema::new(
+            "orders".to_string(),
+            "b".to_string(),
+            struct_type,
+        )]));
+
+        let decoder = JsonDecoder::new("orders", schema, JsonMap::new());
+        let payload = br#"{"b":{"c":10,"d":"ignore"}}"#.as_ref();
+        let tuple = decoder.decode_tuple(payload).expect("decode tuple");
+
+        let Some(Value::Struct(struct_val)) = tuple.value_by_name("orders", "b") else {
+            panic!("expected struct value");
+        };
+        assert_eq!(struct_val.get_field("c"), Some(&Value::Int64(10)));
+        assert_eq!(struct_val.get_field("d"), None);
     }
 }
