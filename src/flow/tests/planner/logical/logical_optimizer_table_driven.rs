@@ -262,7 +262,8 @@ fn create_logical_plan_table_driven() {
         },
         Case {
             name: "test_create_logical_plan_with_state_window_partition_by",
-            sql: "SELECT * FROM users GROUP BY statewindow(a > 0, b = 1) OVER (PARTITION BY k1, k2)",
+            sql:
+                "SELECT * FROM users GROUP BY statewindow(a > 0, b = 1) OVER (PARTITION BY k1, k2)",
             expected: r##"{"children":[{"children":[{"children":[],"id":"DataSource_0","info":["source=users","decoder=json","schema=[a, b, c, k1, k2]"],"operator":"DataSource"}],"id":"Window_1","info":["kind=state","open=a > 0","emit=b = 1","partition_by=k1,k2"],"operator":"Window"}],"id":"Project_2","info":["fields=[*]"],"operator":"Project"}"##,
         },
         Case {

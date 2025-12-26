@@ -9,7 +9,7 @@ use flow::{
     PipelineSink, PipelineSinkConnector, SinkConnectorConfig, SinkEncoderConfig,
     StreamDecoderConfig, StreamDefinition, StreamProps,
 };
-use parser::parse_sql_with_registries;
+use parser::parse_sql;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -181,12 +181,7 @@ fn explain_json(sql: &str, sinks: Vec<PipelineSink>) -> String {
     let registries = PipelineRegistries::new_with_builtin();
     let stream_defs = setup_streams();
 
-    let select_stmt = parse_sql_with_registries(
-        sql,
-        registries.aggregate_registry(),
-        registries.stateful_registry(),
-    )
-    .expect("parse sql");
+    let select_stmt = parse_sql(sql).expect("parse sql");
 
     let bindings = bindings_for_select(&select_stmt, &stream_defs);
     let logical_plan = create_logical_plan(select_stmt, sinks, &stream_defs).expect("logical");
