@@ -878,5 +878,4 @@ mod tests {
         assert_eq!(index1, 0);
         assert_eq!(index2, 1);
     }
-
 }
