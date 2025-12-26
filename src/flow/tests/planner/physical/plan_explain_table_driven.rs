@@ -250,6 +250,11 @@ fn plan_explain_table_driven() {
                 "SELECT stream_4.a, stream_4.b->items[0]->x, stream_4.b->items[3]->x FROM stream_4",
             expected: r##"{"logical":{"children":[{"children":[],"id":"DataSource_0","info":["source=stream_4","decoder=json","schema=[a, b{items[0,3][struct{x}]}]"],"operator":"DataSource"}],"id":"Project_1","info":["fields=[stream_4.a; stream_4.b -> items[0] -> x; stream_4.b -> items[3] -> x]"],"operator":"Project"},"options":null,"physical":{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream_4","schema=[a, b{items[0,3][struct{x}]}]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a, b{items[0,3][struct{x}]}]"],"operator":"PhysicalDecoder"}],"id":"PhysicalProject_2","info":["fields=[stream_4.a; stream_4.b -> items[0] -> x; stream_4.b -> items[3] -> x]"],"operator":"PhysicalProject"}}"##,
         },
+        Case {
+            name: "explain_ndv_countwindow_non_incremental",
+            sql: "SELECT ndv(a) FROM stream GROUP BY countwindow(4)",
+            expected: r##"{"logical":{"children":[{"children":[{"children":[{"children":[],"id":"DataSource_0","info":["source=stream","decoder=json","schema=[a]"],"operator":"DataSource"}],"id":"Window_1","info":["kind=count","count=4"],"operator":"Window"}],"id":"Aggregation_2","info":["aggregates=[ndv(a) -> col_1]"],"operator":"Aggregation"}],"id":"Project_3","info":["fields=[col_1]"],"operator":"Project"},"options":null,"physical":{"children":[{"children":[{"children":[{"children":[{"children":[],"id":"PhysicalDataSource_0","info":["source=stream","schema=[a]"],"operator":"PhysicalDataSource"}],"id":"PhysicalDecoder_1","info":["decoder=json","schema=[a]"],"operator":"PhysicalDecoder"}],"id":"PhysicalCountWindow_2","info":["kind=count","count=4"],"operator":"PhysicalCountWindow"}],"id":"PhysicalAggregation_3","info":["calls=[ndv(a) -> col_1]"],"operator":"PhysicalAggregation"}],"id":"PhysicalProject_4","info":["fields=[col_1]"],"operator":"PhysicalProject"}}"##,
+        },
     ];
 
     for case in cases {

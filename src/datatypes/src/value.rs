@@ -1,10 +1,11 @@
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::datatypes::ConcreteDatatype;
 use crate::types::StructType;
 
 /// List value containing items and their datatype
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ListValue {
     items: Vec<Value>,
     /// Inner values datatype, to distinguish empty lists of different datatypes
@@ -41,7 +42,7 @@ impl ListValue {
 }
 
 /// Struct value containing items and field definitions
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructValue {
     items: Vec<Value>,
     fields: StructType,
@@ -72,7 +73,7 @@ impl StructValue {
 
 /// Value type for type casting
 /// Should be synchronized with ConcreteDatatype variants
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     /// Null value representing missing/unknown data
     Null,
@@ -131,6 +132,109 @@ impl Value {
             Value::Struct(s) => ConcreteDatatype::Struct(s.fields().clone()),
             Value::List(l) => {
                 ConcreteDatatype::List(crate::types::ListType::new(Arc::new(l.datatype().clone())))
+            }
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            (Value::Float32(a), Value::Float32(b)) => (a.is_nan() && b.is_nan()) || a == b,
+            (Value::Float64(a), Value::Float64(b)) => (a.is_nan() && b.is_nan()) || a == b,
+            (Value::Int8(a), Value::Int8(b)) => a == b,
+            (Value::Int16(a), Value::Int16(b)) => a == b,
+            (Value::Int32(a), Value::Int32(b)) => a == b,
+            (Value::Int64(a), Value::Int64(b)) => a == b,
+            (Value::Uint8(a), Value::Uint8(b)) => a == b,
+            (Value::Uint16(a), Value::Uint16(b)) => a == b,
+            (Value::Uint32(a), Value::Uint32(b)) => a == b,
+            (Value::Uint64(a), Value::Uint64(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Struct(a), Value::Struct(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Null => {
+                0_u8.hash(state);
+            }
+            Value::Float32(v) => {
+                1_u8.hash(state);
+                if v.is_nan() {
+                    u32::MAX.hash(state);
+                } else if *v == 0.0 {
+                    0_u32.hash(state);
+                } else {
+                    v.to_bits().hash(state);
+                }
+            }
+            Value::Float64(v) => {
+                2_u8.hash(state);
+                if v.is_nan() {
+                    u64::MAX.hash(state);
+                } else if *v == 0.0 {
+                    0_u64.hash(state);
+                } else {
+                    v.to_bits().hash(state);
+                }
+            }
+            Value::Int8(v) => {
+                3_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Int16(v) => {
+                4_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Int32(v) => {
+                5_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Int64(v) => {
+                6_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Uint8(v) => {
+                7_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Uint16(v) => {
+                8_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Uint32(v) => {
+                9_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Uint64(v) => {
+                10_u8.hash(state);
+                v.hash(state);
+            }
+            Value::String(v) => {
+                11_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Bool(v) => {
+                12_u8.hash(state);
+                v.hash(state);
+            }
+            Value::Struct(v) => {
+                13_u8.hash(state);
+                v.hash(state);
+            }
+            Value::List(v) => {
+                14_u8.hash(state);
+                v.hash(state);
             }
         }
     }
